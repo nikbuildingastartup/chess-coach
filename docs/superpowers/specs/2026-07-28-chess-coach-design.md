@@ -87,7 +87,10 @@ test.
 
 ## Out of Scope (Phase 1)
 
-- Multi-user accounts, auth, billing, multi-tenancy.
+- Multi-user accounts, billing, multi-tenancy. (Deviation: a minimal
+  shared-secret Bearer-token auth gate was added during implementation,
+  since the app is intended to be publicly deployable later — full
+  multi-user auth is still out of scope.)
 - Push/email notifications for the daily focus point (user opens the app
   themselves).
 - Dashboard/report views beyond the daily focus point (e.g. long-term trend
