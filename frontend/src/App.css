@@ -1,0 +1,67 @@
+.app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 20px;
+  text-align: left;
+}
+
+.token-gate {
+  max-width: 360px;
+  margin: 80px auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+}
+
+.sync-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 24px;
+}
+
+.sync-panel input {
+  flex: 1 1 240px;
+}
+
+.sync-result {
+  width: 100%;
+  color: var(--accent, #2e7d32);
+  margin: 0;
+}
+
+.sync-error {
+  width: 100%;
+  color: #d32f2f;
+  margin: 0;
+}
+
+.games-list {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.games-list th,
+.games-list td {
+  text-align: left;
+  padding: 6px 12px 6px 0;
+  border-bottom: 1px solid var(--border, #ddd);
+}
+
+input,
+button {
+  font-size: 16px;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
