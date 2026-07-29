@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db import create_db_and_tables
+from app.routers.games import router as games_router
 
 
 @asynccontextmanager
@@ -22,6 +23,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+app.include_router(games_router)
 
 
 @app.get("/health")
