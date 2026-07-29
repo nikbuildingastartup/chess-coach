@@ -1,14 +1,16 @@
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.chesscom_client import ChessComUnavailableError
+from app.chesscom_client import ChessComUnavailableError, ChessComUserNotFoundError
 from app.config import settings
 from app.db import get_session
 from app.main import app
+from app.models import Game
 
 AUTH_HEADERS = {"Authorization": f"Bearer {settings.app_secret}"}
 
@@ -91,6 +93,68 @@ def test_sync_returns_502_when_chesscom_unavailable(mock_archives, client):
 
     assert response.status_code == 502
     assert "detail" in response.json()
+
+
+@patch("app.routers.games.get_archive_urls", new_callable=AsyncMock)
+def test_sync_returns_404_when_chesscom_user_not_found(mock_archives, client):
+    mock_archives.side_effect = ChessComUserNotFoundError("no such user")
+
+    response = client.post(
+        "/games/sync", json={"username": "nosuchuser"}, headers=AUTH_HEADERS
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "No Chess.com user by that name."}
+
+
+@patch("app.routers.games.get_games_for_month", new_callable=AsyncMock)
+@patch("app.routers.games.get_archive_urls", new_callable=AsyncMock)
+def test_sync_commits_earlier_months_when_a_later_month_fails(
+    mock_archives, mock_games, client
+):
+    mock_archives.return_value = [
+        "https://api.chess.com/pub/player/tester/games/2024/01",
+        "https://api.chess.com/pub/player/tester/games/2024/02",
+    ]
+    mock_games.side_effect = [RAW_GAMES, ChessComUnavailableError("month 2 failed")]
+
+    response = client.post("/games/sync", json={"username": "tester"}, headers=AUTH_HEADERS)
+    assert response.status_code == 502
+
+    # Games from the first (successful) archive month must still be
+    # present, since the sync commits progress per-month rather than only
+    # at the very end.
+    follow_up = client.get("/games", headers=AUTH_HEADERS)
+    assert follow_up.status_code == 200
+    ids = {g["chesscom_game_id"] for g in follow_up.json()}
+    assert ids == {
+        "https://www.chess.com/game/live/1",
+        "https://www.chess.com/game/live/2",
+    }
+
+
+@patch("app.routers.games.get_games_for_month", new_callable=AsyncMock)
+@patch("app.routers.games.get_archive_urls", new_callable=AsyncMock)
+def test_end_time_round_trips_as_utc(mock_archives, mock_games, client):
+    """end_time must survive the DB round-trip as the same UTC instant.
+
+    The Chess.com raw `end_time` is a Unix timestamp (always UTC). The API
+    response must reflect that same instant, tz-aware, regardless of the
+    server's local timezone.
+    """
+    mock_archives.return_value = ["https://api.chess.com/pub/player/tester/games/2024/01"]
+    mock_games.return_value = [RAW_GAMES[0]]
+
+    client.post("/games/sync", json={"username": "tester"}, headers=AUTH_HEADERS)
+    response = client.get("/games", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    returned_end_time = datetime.fromisoformat(body[0]["end_time"])
+    assert returned_end_time.tzinfo is not None
+
+    expected = datetime.fromtimestamp(RAW_GAMES[0]["end_time"], tz=timezone.utc)
+    assert returned_end_time.astimezone(timezone.utc) == expected
 
 
 def test_get_games_without_auth_returns_401(client):

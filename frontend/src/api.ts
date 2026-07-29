@@ -4,7 +4,11 @@ const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
   "http://localhost:8000";
 
-export type ApiErrorKind = "unauthorized" | "chesscom_unreachable" | "other";
+export type ApiErrorKind =
+  | "unauthorized"
+  | "chesscom_unreachable"
+  | "user_not_found"
+  | "other";
 
 export class ApiError extends Error {
   kind: ApiErrorKind;
@@ -70,6 +74,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     if (response.status === 502) {
       throw new ApiError("chesscom_unreachable", response.status, detail);
+    }
+    if (response.status === 404) {
+      throw new ApiError("user_not_found", response.status, detail);
     }
     throw new ApiError("other", response.status, detail);
   }

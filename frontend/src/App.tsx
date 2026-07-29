@@ -97,6 +97,8 @@ function SyncPanel({
         }
         if (err.kind === "chesscom_unreachable") {
           setError("Chess.com is currently unreachable. Please try again later.");
+        } else if (err.kind === "user_not_found") {
+          setError("No Chess.com user by that name. Double-check the username.");
         } else {
           setError(err.message || "Something went wrong while syncing.");
         }

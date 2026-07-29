@@ -1,12 +1,13 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlmodel import Session, select
 
 from app.auth import require_auth
 from app.chesscom_client import (
     ChessComUnavailableError,
+    ChessComUserNotFoundError,
     get_archive_urls,
     get_games_for_month,
 )
@@ -30,6 +31,19 @@ class GameListItem(BaseModel):
     end_time: datetime
     time_class: str
     result: str
+
+    @field_validator("end_time", mode="after")
+    @classmethod
+    def _assume_utc_if_naive(cls, value: datetime) -> datetime:
+        """SQLite drops tzinfo on round-trip even with a tz-aware column,
+        so a naive value here always represents a UTC instant (it was
+        always written as UTC — see routers/games.py sync_games). Attach
+        that offset explicitly rather than letting it be misread as local
+        time by API consumers.
+        """
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
 
 
 def _derive_result(raw_game: dict, username: str) -> str:
@@ -71,7 +85,14 @@ async def sync_games(body: SyncRequest, session: Session = Depends(get_session))
                     )
                 )
                 imported += 1
-        session.commit()
+            # Commit after each archive month so a later failure doesn't
+            # discard games already fetched from earlier months.
+            session.commit()
+    except ChessComUserNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No Chess.com user by that name.",
+        ) from exc
     except ChessComUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)

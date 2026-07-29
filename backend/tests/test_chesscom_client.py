@@ -4,6 +4,7 @@ import respx
 
 from app.chesscom_client import (
     ChessComUnavailableError,
+    ChessComUserNotFoundError,
     get_archive_urls,
     get_games_for_month,
 )
@@ -46,6 +47,17 @@ async def test_get_archive_urls_non_2xx_raises_unavailable_error():
 
     with pytest.raises(ChessComUnavailableError):
         await get_archive_urls("testuser")
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_archive_urls_404_raises_user_not_found_error():
+    respx.get("https://api.chess.com/pub/player/nosuchuser/games/archives").mock(
+        return_value=httpx.Response(404)
+    )
+
+    with pytest.raises(ChessComUserNotFoundError):
+        await get_archive_urls("nosuchuser")
 
 
 @respx.mock
