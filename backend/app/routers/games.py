@@ -82,6 +82,7 @@ async def sync_games(body: SyncRequest, session: Session = Depends(get_session))
                         end_time=datetime.fromtimestamp(raw_game["end_time"], tz=timezone.utc),
                         time_class=raw_game["time_class"],
                         result=_derive_result(raw_game, body.username),
+                        source="chesscom",
                     )
                 )
                 imported += 1
