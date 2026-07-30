@@ -1,0 +1,60 @@
+:root {
+  --text: #6b6559;
+  --text-muted: #8c8570;
+  --text-h: #21201c;
+  --bg: #f6f3ec;
+  --card-bg: #fbfaf6;
+  --border: #e4dfd3;
+  --border-strong: #d8d2c0;
+  --accent: #3f5d48;
+  --accent-strong: #2e4636;
+  --won: #3f5d48;
+  --won-bg: #dde6de;
+  --lost: #b4483a;
+  --lost-bg: #f1ead9;
+  --drawn: #8c8570;
+
+  --serif: 'Source Serif 4', serif;
+  --sans: 'Work Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  font: 16px/145% var(--sans);
+  color-scheme: light;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+h1,
+h2 {
+  font-family: var(--serif);
+  font-weight: 600;
+  color: var(--text-h);
+  margin: 0;
+}
+
+h1 {
+  font-size: 34px;
+  letter-spacing: -0.3px;
+}
+
+h2 {
+  font-size: 20px;
+}
+
+p {
+  margin: 0;
+}
