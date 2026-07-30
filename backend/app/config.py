@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     app_secret: str
     cors_origins: list[str]
     database_url: str = "sqlite:///./chess_coach.db"
+    stockfish_path: str = "stockfish"
 
 
 settings = Settings()
