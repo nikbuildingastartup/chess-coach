@@ -9,6 +9,57 @@ connect_args = {"check_same_thread": False} if settings.database_url.startswith(
 engine = create_engine(settings.database_url, connect_args=connect_args)
 
 
+def _check_no_interrupted_migration(conn: Connection) -> None:
+    """Refuse to start if a previous migration was interrupted mid-flight.
+
+    `_rebuild_game_table_with_nullable_chesscom_id` works by renaming
+    `game` to `game_old`, building a fresh `game` table, copying rows
+    across, then dropping `game_old`. If the process is killed between the
+    rename and the drop, `game_old` is left behind holding the user's real
+    rows while `game` no longer exists.
+
+    That is dangerous specifically because it's invisible on the next
+    startup: `create_all()` uses `CREATE TABLE IF NOT EXISTS`, so it just
+    silently creates a brand-new, EMPTY `game` table (nothing blocks it
+    anymore), the migration logic sees the new table already matches the
+    current schema and no-ops, and the app boots fine with what looks like
+    an empty games list -- indistinguishable from data loss, while the
+    real data sits orphaned in `game_old`.
+
+    So: if `game_old` exists at startup, stop hard rather than paper over
+    it. This must run before `create_all`/the migration logic, while
+    `game_old` (and whatever state `game` is in) are still exactly as the
+    interrupted run left them.
+    """
+    row = conn.exec_driver_sql(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'game_old'"
+    ).fetchone()
+    if row is None:
+        return
+
+    raise RuntimeError(
+        "A previous database migration appears to have been interrupted: "
+        "a `game_old` table still exists in this SQLite database. Your "
+        "original data may still be recoverable there -- refusing to "
+        "start so it doesn't get silently masked behind a fresh, empty "
+        "`game` table.\n"
+        "\n"
+        "To resolve this:\n"
+        "  1. Inspect the database with the `sqlite3` CLI, e.g.:\n"
+        "       sqlite3 <path-to-db> '.schema game_old' '.schema game' "
+        "'SELECT COUNT(*) FROM game_old;'\n"
+        "  2. If `game_old` holds your real data and `game` is missing "
+        "or empty, restore it, e.g.:\n"
+        "       sqlite3 <path-to-db> 'DROP TABLE IF EXISTS game; "
+        "ALTER TABLE game_old RENAME TO game;'\n"
+        "  3. Once you've confirmed the data is safe (either restored, "
+        "or you've verified `game_old` is safe to discard), drop "
+        "`game_old`:\n"
+        "       sqlite3 <path-to-db> 'DROP TABLE game_old;'\n"
+        "  4. Restart the app."
+    )
+
+
 def _migrate_game_table(conn: Connection) -> None:
     """Idempotently bring an existing `game` table up to this branch's schema.
 
@@ -96,6 +147,10 @@ def _rebuild_game_table_with_nullable_chesscom_id(conn: Connection) -> None:
 
 
 def create_db_and_tables() -> None:
+    if engine.dialect.name == "sqlite":
+        with engine.begin() as conn:
+            _check_no_interrupted_migration(conn)
+
     SQLModel.metadata.create_all(engine)
     if engine.dialect.name == "sqlite":
         with engine.begin() as conn:
