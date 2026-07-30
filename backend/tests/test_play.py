@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import chess
 import pytest
 from fastapi.testclient import TestClient
@@ -33,6 +35,24 @@ def db_engine():
     )
     SQLModel.metadata.create_all(engine)
     return engine
+
+
+@pytest.fixture(autouse=True)
+def mock_coaching_summary():
+    """Prevent any test from making a real fal.ai network call.
+
+    `POST /play/games` always calls `generate_coaching_summary` now. The
+    real backend/.env (gitignored, holds the user's live FAL_KEY) is picked
+    up by `Settings` even under pytest, so without this autouse mock every
+    test hitting that endpoint would hit the real fal.ai API. Individual
+    tests that want to exercise the success/failure paths explicitly
+    override this mock's return value / side effect.
+    """
+    with patch(
+        "app.routers.play.generate_coaching_summary",
+        return_value="Default mocked coaching summary.",
+    ) as mock:
+        yield mock
 
 
 @pytest.fixture()
@@ -112,6 +132,53 @@ def test_save_game_persists_it_with_correct_fields_and_returns_analysis(db_clien
         assert game.result == "win"
         assert game.analyzed is True
         assert game.analysis_json is not None
+        assert game.coaching_summary == "Default mocked coaching summary."
+
+
+def test_save_game_stores_and_returns_coaching_summary_on_success(
+    db_client, db_engine, mock_coaching_summary
+):
+    mock_coaching_summary.return_value = "Watch out for hanging pieces after queen trades."
+
+    response = db_client.post(
+        "/play/games",
+        json={"pgn": BLUNDERING_PGN, "result": "win"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["coaching_summary"] == "Watch out for hanging pieces after queen trades."
+
+    with Session(db_engine) as session:
+        game = session.exec(select(Game).where(Game.id == body["game_id"])).one()
+        assert game.coaching_summary == "Watch out for hanging pieces after queen trades."
+
+
+def test_save_game_succeeds_with_null_coaching_summary_when_generation_fails(
+    db_client, db_engine, mock_coaching_summary
+):
+    # `generate_coaching_summary` itself is documented to swallow errors and
+    # return None rather than raise -- verify the endpoint still succeeds
+    # end-to-end and persists the game when that happens.
+    mock_coaching_summary.return_value = None
+
+    response = db_client.post(
+        "/play/games",
+        json={"pgn": BLUNDERING_PGN, "result": "win"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["coaching_summary"] is None
+    assert len(body["analysis"]) == 6
+
+    with Session(db_engine) as session:
+        game = session.exec(select(Game).where(Game.id == body["game_id"])).one()
+        assert game.coaching_summary is None
+        assert game.analysis_json is not None
+        assert game.analyzed is True
 
 
 def test_save_game_without_auth_returns_401(client):
@@ -130,7 +197,10 @@ def test_get_game_analysis_returns_saved_analysis(db_client):
     response = db_client.get(f"/play/games/{game_id}/analysis", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
-    assert response.json()["analysis"] == save_response.json()["analysis"]
+    body = response.json()
+    assert body["analysis"] == save_response.json()["analysis"]
+    assert body["coaching_summary"] == save_response.json()["coaching_summary"]
+    assert body["coaching_summary"] == "Default mocked coaching summary."
 
 
 def test_get_game_analysis_without_auth_returns_401(db_client):

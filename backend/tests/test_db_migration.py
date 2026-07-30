@@ -121,6 +121,7 @@ def test_migration_upgrades_a_real_pre_branch_sqlite_file(tmp_path):
         # New columns exist.
         assert "source" in cols
         assert "analysis_json" in cols
+        assert "coaching_summary" in cols
 
         # chesscom_game_id is no longer NOT NULL.
         assert cols["chesscom_game_id"][3] == 0  # notnull flag
@@ -144,8 +145,10 @@ def test_migration_upgrades_a_real_pre_branch_sqlite_file(tmp_path):
         conn.execute(
             text(
                 "INSERT INTO game "
-                "(chesscom_game_id, pgn, end_time, time_class, result, source, analysis_json, analyzed) "
-                "VALUES (NULL, '1. e4', '2024-01-02 00:00:00+00:00', 'untimed', 'loss', 'played', '[]', 1)"
+                "(chesscom_game_id, pgn, end_time, time_class, result, source, analysis_json, "
+                "analyzed, coaching_summary) "
+                "VALUES (NULL, '1. e4', '2024-01-02 00:00:00+00:00', 'untimed', 'loss', 'played', "
+                "'[]', 1, 'Nice game overall.')"
             )
         )
 
@@ -175,6 +178,7 @@ def test_migration_is_a_no_op_against_a_fresh_current_schema_db(tmp_path):
             "source",
             "analysis_json",
             "analyzed",
+            "coaching_summary",
         }
 
 

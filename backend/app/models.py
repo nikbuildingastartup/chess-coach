@@ -14,3 +14,4 @@ class Game(SQLModel, table=True):
     source: str = "chesscom"
     analysis_json: str | None = None
     analyzed: bool = False
+    coaching_summary: str | None = None

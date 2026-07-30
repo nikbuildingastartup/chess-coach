@@ -8,6 +8,7 @@ from sqlmodel import Session
 
 from app.auth import require_auth
 from app.chess_engine import analyze_game, get_engine_move
+from app.coaching import generate_coaching_summary
 from app.db import get_session
 from app.models import Game
 
@@ -37,10 +38,12 @@ class SaveGameRequest(BaseModel):
 class SaveGameResponse(BaseModel):
     game_id: int
     analysis: list[dict[str, Any]]
+    coaching_summary: str | None = None
 
 
 class GameAnalysisResponse(BaseModel):
     analysis: list[dict[str, Any]]
+    coaching_summary: str | None = None
 
 
 @router.post("/games", response_model=SaveGameResponse)
@@ -48,6 +51,7 @@ def save_played_game(
     body: SaveGameRequest, session: Session = Depends(get_session)
 ) -> SaveGameResponse:
     analysis = analyze_game(body.pgn)
+    coaching_summary = generate_coaching_summary(body.pgn, analysis, body.result)
 
     game = Game(
         chesscom_game_id=None,
@@ -58,6 +62,7 @@ def save_played_game(
         source="played",
         analysis_json=json.dumps(analysis),
         analyzed=True,
+        coaching_summary=coaching_summary,
     )
     session.add(game)
     session.commit()
@@ -68,7 +73,9 @@ def save_played_game(
             "Game.id is None after insert+refresh; expected the DB to have "
             "assigned a primary key."
         )
-    return SaveGameResponse(game_id=game.id, analysis=analysis)
+    return SaveGameResponse(
+        game_id=game.id, analysis=analysis, coaching_summary=coaching_summary
+    )
 
 
 @router.get("/games/{game_id}/analysis", response_model=GameAnalysisResponse)
@@ -82,4 +89,6 @@ def get_game_analysis(
             detail="No analysis found for that game.",
         )
 
-    return GameAnalysisResponse(analysis=json.loads(game.analysis_json))
+    return GameAnalysisResponse(
+        analysis=json.loads(game.analysis_json), coaching_summary=game.coaching_summary
+    )
