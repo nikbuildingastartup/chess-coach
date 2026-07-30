@@ -190,7 +190,11 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
 
           {error && <p className="sync-error">{error}</p>}
 
-          <GameTips analysis={savedGame.analysis} onPlayAgain={handleNewGame} />
+          <GameTips
+            analysis={savedGame.analysis}
+            coachingSummary={savedGame.coaching_summary}
+            onPlayAgain={handleNewGame}
+          />
         </>
       ) : (
         <>

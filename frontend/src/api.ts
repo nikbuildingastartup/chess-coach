@@ -61,6 +61,7 @@ export interface AnalysisEntry {
 export interface SavedGame {
   game_id: number;
   analysis: AnalysisEntry[];
+  coaching_summary: string | null;
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

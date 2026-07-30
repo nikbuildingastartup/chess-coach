@@ -9,14 +9,19 @@ const CLASSIFICATION_LABEL: Record<AnalysisEntry["classification"], string> = {
 
 function GameTips({
   analysis,
+  coachingSummary,
   onPlayAgain,
 }: {
   analysis: AnalysisEntry[];
+  coachingSummary: string | null;
   onPlayAgain: () => void;
 }) {
   return (
     <div className="game-tips">
       <h2>Game tips</h2>
+      {coachingSummary && (
+        <p className="card coaching-summary">{coachingSummary}</p>
+      )}
       {analysis.length === 0 ? (
         <p className="muted">No notable moves — nothing to review.</p>
       ) : (

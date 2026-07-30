@@ -74,6 +74,14 @@
   gap: 16px;
 }
 
+.coaching-summary {
+  font-family: var(--serif);
+  font-size: 16px;
+  line-height: 155%;
+  color: var(--text-h);
+  margin: 0;
+}
+
 .tips-list {
   list-style: none;
   margin: 0;
