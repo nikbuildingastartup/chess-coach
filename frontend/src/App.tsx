@@ -36,9 +36,38 @@ function TokenGate({ onSubmit }: { onSubmit: (token: string) => void }) {
   );
 }
 
+const LOST_OUTCOMES = new Set([
+  "resigned",
+  "checkmated",
+  "timeout",
+  "abandoned",
+]);
+const DRAWN_OUTCOMES = new Set([
+  "agreed",
+  "repetition",
+  "stalemate",
+  "insufficient",
+  "50move",
+  "timevsinsufficient",
+]);
+
+function resultTone(result: string): "won" | "lost" | "drawn" {
+  if (result === "win") return "won";
+  if (LOST_OUTCOMES.has(result)) return "lost";
+  if (DRAWN_OUTCOMES.has(result)) return "drawn";
+  return "drawn";
+}
+
+function resultLabel(result: string): string {
+  const tone = resultTone(result);
+  if (tone === "won") return "Won";
+  if (tone === "lost") return "Lost";
+  return "Drew";
+}
+
 function GamesList({ games }: { games: Game[] }) {
   if (games.length === 0) {
-    return <p>No games imported yet.</p>;
+    return <p className="muted">No games imported yet.</p>;
   }
 
   return (
@@ -46,16 +75,23 @@ function GamesList({ games }: { games: Game[] }) {
       <thead>
         <tr>
           <th>Date</th>
-          <th>Time class</th>
           <th>Result</th>
+          <th>Time control</th>
         </tr>
       </thead>
       <tbody>
         {games.map((game) => (
           <tr key={game.chesscom_game_id}>
-            <td>{new Date(game.end_time).toLocaleString()}</td>
+            <td>
+              {new Date(game.end_time).toLocaleDateString(undefined, {
+                month: "short",
+                day: "numeric",
+              })}
+            </td>
+            <td className={`result result-${resultTone(game.result)}`}>
+              {resultLabel(game.result)}
+            </td>
             <td>{game.time_class}</td>
-            <td>{game.result}</td>
           </tr>
         ))}
       </tbody>
@@ -67,7 +103,7 @@ function SyncPanel({
   onSynced,
   onUnauthorized,
 }: {
-  onSynced: () => void;
+  onSynced: (username: string) => void;
   onUnauthorized: () => void;
 }) {
   const [username, setUsername] = useState("");
@@ -88,7 +124,7 @@ function SyncPanel({
     try {
       const res = await syncGames(username.trim());
       setResult(res);
-      onSynced();
+      onSynced(username.trim());
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.kind === "unauthorized") {
@@ -110,27 +146,57 @@ function SyncPanel({
     }
   };
 
+  const statusTone = error ? "error" : result ? "done" : "idle";
+  const statusText = error
+    ? error
+    : result
+      ? `Up to date · imported ${result.imported} new game${result.imported === 1 ? "" : "s"} (${result.total} total)`
+      : "Enter a Chess.com username to sync";
+
   return (
     <form onSubmit={handleSubmit} className="sync-panel">
-      <label htmlFor="username">Chess.com username</label>
-      <input
-        id="username"
-        type="text"
-        value={username}
-        onChange={(e) => setUsername(e.target.value)}
-        placeholder="e.g. hikaru"
-        disabled={loading}
-      />
-      <button type="submit" disabled={loading || !username.trim()}>
-        {loading ? "Syncing..." : "Sync"}
-      </button>
-      {result && (
-        <p className="sync-result">
-          Imported {result.imported} new game(s) ({result.total} total).
-        </p>
-      )}
-      {error && <p className="sync-error">{error}</p>}
+      <div className={`status-bar status-${statusTone}`}>
+        <span className="status-dot" />
+        <span className="status-text">{statusText}</span>
+        <div className="status-steps">
+          <span className={loading ? "step step-active" : "step"}>
+            {loading ? "Syncing" : "Idle"}
+          </span>
+          <span className={result ? "step step-active" : "step"}>Done</span>
+        </div>
+      </div>
+      <div className="sync-controls">
+        <label htmlFor="username">Chess.com username</label>
+        <input
+          id="username"
+          type="text"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder="e.g. hikaru"
+          disabled={loading}
+        />
+        <button type="submit" disabled={loading || !username.trim()}>
+          {loading ? "Syncing..." : "Sync"}
+        </button>
+      </div>
     </form>
+  );
+}
+
+const NAV_TABS = ["Auth", "Cold start", "Sync", "Daily focus"] as const;
+
+function TopNav() {
+  return (
+    <nav className="top-nav">
+      {NAV_TABS.map((tab) => (
+        <span
+          key={tab}
+          className={tab === "Sync" ? "nav-pill nav-pill-active" : "nav-pill"}
+        >
+          {tab}
+        </span>
+      ))}
+    </nav>
   );
 }
 
@@ -138,6 +204,7 @@ function App() {
   const [token, setTokenState] = useState<string | null>(() => getToken());
   const [games, setGames] = useState<Game[]>([]);
   const [gamesError, setGamesError] = useState<string | null>(null);
+  const [syncedUsername, setSyncedUsername] = useState<string | null>(null);
 
   const handleUnauthorized = useCallback(() => {
     clearToken();
@@ -179,12 +246,30 @@ function App() {
   }
 
   return (
-    <div className="app">
-      <h1>Chess Coach</h1>
-      <SyncPanel onSynced={loadGames} onUnauthorized={handleUnauthorized} />
-      <h2>Games</h2>
-      {gamesError && <p className="sync-error">{gamesError}</p>}
-      <GamesList games={games} />
+    <div className="page">
+      <TopNav />
+      <div className="app">
+        <p className="eyebrow">Sync</p>
+        <h1>
+          {syncedUsername ? `${syncedUsername} on Chess.com` : "Chess Coach"}
+        </h1>
+        <div className="card">
+          <SyncPanel
+            onSynced={(username) => {
+              setSyncedUsername(username);
+              loadGames();
+            }}
+            onUnauthorized={handleUnauthorized}
+          />
+        </div>
+        <div className="card">
+          {gamesError && <p className="sync-error">{gamesError}</p>}
+          <GamesList games={games} />
+        </div>
+        <button type="button" className="focus-button" disabled>
+          See today's focus
+        </button>
+      </div>
     </div>
   );
 }
