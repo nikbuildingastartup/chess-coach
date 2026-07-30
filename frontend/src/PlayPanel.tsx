@@ -9,6 +9,7 @@ import {
   type SavedGame,
   type Skill,
 } from "./api";
+import GameTips from "./GameTips";
 
 const STRENGTH_OPTIONS: { value: Skill; label: string }[] = [
   { value: "easy", label: "Easy" },
@@ -178,49 +179,62 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
         ))}
       </div>
 
-      <div className="board-container">
-        <Chessboard
-          options={{
-            position: fen,
-            onPieceDrop,
-            id: "play-vs-engine-board",
-            allowDragging: status.state === "playing",
-          }}
-        />
-      </div>
+      {isOver && savedGame ? (
+        <>
+          <div className="status-bar status-done">
+            <span className="status-dot" />
+            <span className="status-text">
+              {status.state === "over" ? status.reason : ""}
+            </span>
+          </div>
 
-      <div className={`status-bar${isOver ? " status-done" : ""}`}>
-        <span className="status-dot" />
-        <span className="status-text">
-          {status.state === "thinking"
-            ? "Engine is thinking..."
-            : status.state === "over"
-              ? status.reason
-              : "Your move."}
-        </span>
-      </div>
+          {error && <p className="sync-error">{error}</p>}
 
-      {error && <p className="sync-error">{error}</p>}
+          <GameTips analysis={savedGame.analysis} onPlayAgain={handleNewGame} />
+        </>
+      ) : (
+        <>
+          <div className="board-container">
+            <Chessboard
+              options={{
+                position: fen,
+                onPieceDrop,
+                id: "play-vs-engine-board",
+                allowDragging: status.state === "playing",
+              }}
+            />
+          </div>
 
-      {isOver && savedGame && (
-        <p className="muted">Game over — analysis received.</p>
+          <div className={`status-bar${isOver ? " status-done" : ""}`}>
+            <span className="status-dot" />
+            <span className="status-text">
+              {status.state === "thinking"
+                ? "Engine is thinking..."
+                : status.state === "over"
+                  ? status.reason
+                  : "Your move."}
+            </span>
+          </div>
+
+          {error && <p className="sync-error">{error}</p>}
+
+          <div className="play-controls">
+            <button
+              type="button"
+              className="resign-button"
+              onClick={handleResign}
+              disabled={!canResign}
+            >
+              Resign
+            </button>
+            {isOver && (
+              <button type="button" onClick={handleNewGame}>
+                New game
+              </button>
+            )}
+          </div>
+        </>
       )}
-
-      <div className="play-controls">
-        <button
-          type="button"
-          className="resign-button"
-          onClick={handleResign}
-          disabled={!canResign}
-        >
-          Resign
-        </button>
-        {isOver && (
-          <button type="button" onClick={handleNewGame}>
-            New game
-          </button>
-        )}
-      </div>
     </div>
   );
 }
