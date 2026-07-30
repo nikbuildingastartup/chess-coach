@@ -45,3 +45,14 @@ def test_analyze_game_entries_have_expected_shape():
         }
         assert entry["classification"] in ("blunder", "mistake", "inaccuracy", "good")
         assert isinstance(entry["eval_cp"], int)
+
+
+def test_analyze_game_returns_empty_list_for_empty_pgn():
+    """chess.js's `.pgn()` on a fresh, moveless game returns "" -- e.g. a
+    human resigns before making any move. `chess.pgn.read_game` returns
+    None for that input, which used to trip an `assert game is not None`
+    and surface as an opaque 500. There are no moves to analyze, so this
+    should just return an empty list instead of raising.
+    """
+    assert analyze_game("") == []
+    assert analyze_game("   ") == []

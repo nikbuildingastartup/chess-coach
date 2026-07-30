@@ -53,7 +53,11 @@ def get_engine_move(fen: str, skill: str) -> str:
         engine.configure({"Skill Level": skill_level})
         result = engine.play(board, chess.engine.Limit(time=ENGINE_MOVE_TIME_SECONDS))
         move = result.move
-        assert move is not None
+        if move is None:
+            raise RuntimeError(
+                "Stockfish returned no move for a position that should have "
+                "legal moves available."
+            )
         return board.san(move)
 
 
@@ -98,8 +102,14 @@ def analyze_game(pgn: str) -> list[dict]:
     position in the game — reopening the engine process per move would be
     far too slow for a full game.
     """
+    if not pgn.strip():
+        # A fresh, moveless game (e.g. resigning before making any move)
+        # produces an empty PGN string. There are no moves to analyze.
+        return []
+
     game = chess.pgn.read_game(io.StringIO(pgn))
-    assert game is not None
+    if game is None:
+        raise RuntimeError(f"Could not parse PGN into a game: {pgn!r}")
     board = game.board()
 
     results: list[dict] = []

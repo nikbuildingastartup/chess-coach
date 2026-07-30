@@ -63,7 +63,11 @@ def save_played_game(
     session.commit()
     session.refresh(game)
 
-    assert game.id is not None
+    if game.id is None:
+        raise RuntimeError(
+            "Game.id is None after insert+refresh; expected the DB to have "
+            "assigned a primary key."
+        )
     return SaveGameResponse(game_id=game.id, analysis=analysis)
 
 
