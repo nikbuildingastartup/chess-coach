@@ -145,7 +145,7 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
   );
 
   const handleResign = useCallback(() => {
-    if (status.state === "over") return;
+    if (status.state !== "playing") return;
     void finishGame("loss", "You resigned.");
   }, [status, finishGame]);
 
@@ -158,6 +158,7 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
   }, []);
 
   const isOver = status.state === "over";
+  const canResign = status.state === "playing";
 
   return (
     <div className="play-panel">
@@ -188,7 +189,7 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
         />
       </div>
 
-      <div className={`status-bar status-${isOver ? "done" : "idle"}`}>
+      <div className={`status-bar${isOver ? " status-done" : ""}`}>
         <span className="status-dot" />
         <span className="status-text">
           {status.state === "thinking"
@@ -210,7 +211,7 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
           type="button"
           className="resign-button"
           onClick={handleResign}
-          disabled={isOver}
+          disabled={!canResign}
         >
           Resign
         </button>
