@@ -51,8 +51,12 @@ def save_played_game(
     body: SaveGameRequest, session: Session = Depends(get_session)
 ) -> SaveGameResponse:
     analysis = analyze_game(body.pgn)
-    coaching_summary = generate_coaching_summary(body.pgn, analysis, body.result)
 
+    # Persist the game (with its full Stockfish analysis) BEFORE calling out
+    # to the coaching-summary LLM. That call is a network round-trip that
+    # can hang or fail; if it happened first and the request were
+    # interrupted, the just-finished game and its analysis would be lost
+    # entirely instead of just missing its coaching summary.
     game = Game(
         chesscom_game_id=None,
         pgn=body.pgn,
@@ -62,7 +66,7 @@ def save_played_game(
         source="played",
         analysis_json=json.dumps(analysis),
         analyzed=True,
-        coaching_summary=coaching_summary,
+        coaching_summary=None,
     )
     session.add(game)
     session.commit()
@@ -73,6 +77,12 @@ def save_played_game(
             "Game.id is None after insert+refresh; expected the DB to have "
             "assigned a primary key."
         )
+
+    coaching_summary = generate_coaching_summary(body.pgn, analysis, body.result)
+    game.coaching_summary = coaching_summary
+    session.add(game)
+    session.commit()
+
     return SaveGameResponse(
         game_id=game.id, analysis=analysis, coaching_summary=coaching_summary
     )

@@ -56,10 +56,12 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [status, setStatus] = useState<GameStatus>({ state: "playing" });
   const [error, setError] = useState<string | null>(null);
   const [savedGame, setSavedGame] = useState<SavedGame | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const finishGame = useCallback(
     async (result: PlayResult, reason: string) => {
       setStatus({ state: "over", result, reason });
+      setSaving(true);
       const pgn = chessRef.current.pgn();
       try {
         const saved = await savePlayedGame(pgn, result);
@@ -74,6 +76,8 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
             ? err.message
             : "Failed to save the game."
         );
+      } finally {
+        setSaving(false);
       }
     },
     [onUnauthorized]
@@ -215,7 +219,9 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
               {status.state === "thinking"
                 ? "Engine is thinking..."
                 : status.state === "over"
-                  ? status.reason
+                  ? saving
+                    ? "Analyzing your game..."
+                    : status.reason
                   : "Your move."}
             </span>
           </div>

@@ -15,11 +15,27 @@ def test_analyze_game_flags_the_hung_queen_as_blunder_or_mistake():
     qxf6_entry = analysis[4]
     assert qxf6_entry["san"] == "Qxf6"
     assert qxf6_entry["move_number"] == 3
+    assert qxf6_entry["side"] == "white"
     # Losing a queen for a knight is a >200cp swing; must not classify as
     # "good" due to a sign error in the mover-perspective calculation.
     assert qxf6_entry["classification"] in ("blunder", "mistake")
     assert qxf6_entry["best_move"] is not None
     assert qxf6_entry["best_move"] != "Qxf6"
+
+
+def test_analyze_game_reports_side_correctly_for_white_and_black_moves():
+    analysis = analyze_game(BLUNDERING_PGN)
+
+    # Moves alternate white, black, white, black, ... starting with white.
+    expected_sides = ["white", "black", "white", "black", "white", "black"]
+    assert [entry["side"] for entry in analysis] == expected_sides
+
+    # Sanity-check against the actual SAN so the index mapping above is
+    # trustworthy: e4/Qf3/Qxf6 are White's moves, Nf6/Nc6/gxf6 are Black's.
+    white_sans = {entry["san"] for entry in analysis if entry["side"] == "white"}
+    black_sans = {entry["san"] for entry in analysis if entry["side"] == "black"}
+    assert white_sans == {"e4", "Qf3", "Qxf6"}
+    assert black_sans == {"Nf6", "Nc6", "gxf6"}
 
 
 def test_analyze_game_only_reports_best_move_for_non_good_classifications():
@@ -39,10 +55,12 @@ def test_analyze_game_entries_have_expected_shape():
         assert set(entry.keys()) == {
             "move_number",
             "san",
+            "side",
             "classification",
             "eval_cp",
             "best_move",
         }
+        assert entry["side"] in ("white", "black")
         assert entry["classification"] in ("blunder", "mistake", "inaccuracy", "good")
         assert isinstance(entry["eval_cp"], int)
 

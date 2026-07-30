@@ -1,11 +1,28 @@
 from unittest.mock import MagicMock, patch
 
-from app.coaching import generate_coaching_summary
+from app.coaching import _build_user_prompt, generate_coaching_summary
 
 SAMPLE_ANALYSIS = [
     {
+        "move_number": 1,
+        "san": "e4",
+        "side": "white",
+        "classification": "good",
+        "eval_cp": 20,
+        "best_move": None,
+    },
+    {
+        "move_number": 2,
+        "san": "Qh5",
+        "side": "black",
+        "classification": "blunder",
+        "eval_cp": -900,
+        "best_move": "Nf6",
+    },
+    {
         "move_number": 3,
         "san": "Qxf6",
+        "side": "white",
         "classification": "blunder",
         "eval_cp": -900,
         "best_move": "Nf3",
@@ -13,11 +30,44 @@ SAMPLE_ANALYSIS = [
     {
         "move_number": 4,
         "san": "gxf6",
+        "side": "black",
         "classification": "good",
         "eval_cp": 900,
         "best_move": "gxf6",
     },
 ]
+
+
+def test_build_user_prompt_only_includes_the_users_white_moves():
+    prompt = _build_user_prompt("1. e4 Qh5 2. Qxf6 gxf6", SAMPLE_ANALYSIS, "win")
+
+    # Isolate the "Flagged moves" section so a Black SAN merely appearing
+    # in the raw PGN text doesn't produce a false pass/fail here -- what
+    # matters is which moves are listed as *flagged* for the player.
+    flagged_section = prompt.split("Flagged moves")[1]
+
+    # The engine's Black blunder (Qh5) must never be attributed to the
+    # player -- only White's flagged move (Qxf6) belongs in the prompt.
+    assert "Qxf6" in flagged_section
+    assert "Qh5" not in flagged_section
+    assert "played White" in prompt
+
+
+def test_build_user_prompt_reports_no_mistakes_when_only_engine_erred():
+    engine_only_blunder = [
+        {
+            "move_number": 2,
+            "san": "Qh5",
+            "side": "black",
+            "classification": "blunder",
+            "eval_cp": -900,
+            "best_move": "Nf6",
+        }
+    ]
+
+    prompt = _build_user_prompt("1. e4 Qh5", engine_only_blunder, "win")
+
+    assert "No blunders or mistakes were flagged in this game." in prompt
 
 
 def _mock_openai_response(text: str) -> MagicMock:

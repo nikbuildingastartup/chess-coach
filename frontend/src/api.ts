@@ -53,6 +53,7 @@ export type PlayResult = "win" | "loss" | "draw";
 export interface AnalysisEntry {
   move_number: number;
   san: string;
+  side: "white" | "black";
   classification: "blunder" | "mistake" | "inaccuracy" | "good";
   eval_cp: number;
   best_move: string | null;

@@ -121,6 +121,9 @@ def analyze_game(pgn: str) -> list[dict]:
         for move in game.mainline_moves():
             move_number = board.fullmove_number
             san = board.san(move)
+            # `board.turn` before pushing the move is the side that is
+            # about to move -- i.e. the side making *this* move.
+            side = "white" if board.turn == chess.WHITE else "black"
 
             eval_before_mover_pov = _score_to_cp(info_before["score"].relative)
             pv = info_before.get("pv")
@@ -137,6 +140,7 @@ def analyze_game(pgn: str) -> list[dict]:
                 {
                     "move_number": move_number,
                     "san": san,
+                    "side": side,
                     "classification": classification,
                     "eval_cp": eval_after_mover_pov,
                     "best_move": best_move_san if classification != "good" else None,
