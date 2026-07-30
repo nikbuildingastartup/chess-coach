@@ -46,6 +46,23 @@ export interface Game {
   result: string;
 }
 
+export type Skill = "easy" | "medium" | "hard";
+
+export type PlayResult = "win" | "loss" | "draw";
+
+export interface AnalysisEntry {
+  move_number: number;
+  san: string;
+  classification: "blunder" | "mistake" | "inaccuracy" | "good";
+  eval_cp: number;
+  best_move: string | null;
+}
+
+export interface SavedGame {
+  game_id: number;
+  analysis: AnalysisEntry[];
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
 
@@ -93,4 +110,21 @@ export function syncGames(username: string): Promise<SyncResult> {
 
 export function listGames(): Promise<Game[]> {
   return request<Game[]>("/games", { method: "GET" });
+}
+
+export function getEngineMove(fen: string, skill: Skill): Promise<string> {
+  return request<{ move: string }>("/play/engine-move", {
+    method: "POST",
+    body: JSON.stringify({ fen, skill }),
+  }).then((res) => res.move);
+}
+
+export function savePlayedGame(
+  pgn: string,
+  result: PlayResult
+): Promise<SavedGame> {
+  return request<SavedGame>("/play/games", {
+    method: "POST",
+    body: JSON.stringify({ pgn, result }),
+  });
 }
