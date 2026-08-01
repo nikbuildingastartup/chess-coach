@@ -2,9 +2,11 @@ import logging
 from typing import Any
 
 from openai import OpenAI
+from sqlmodel import Session
 
 from app.config import settings
 from app.llm_json import parse_structured_llm_response
+from app.llm_usage import record_llm_usage
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +67,7 @@ def _build_user_prompt(pgn: str, analysis: list[dict[str, Any]], result: str) ->
 
 
 def generate_coaching_summary(
-    pgn: str, analysis: list[dict[str, Any]], result: str
+    pgn: str, analysis: list[dict[str, Any]], result: str, session: Session
 ) -> dict[str, str | None] | None:
     """Generate a structured `{headline, explanation, recommendation}`
     coaching summary for one game.
@@ -105,6 +107,15 @@ def generate_coaching_summary(
             max_tokens=300,
         )
         content = response.choices[0].message.content or ""
+        try:
+            record_llm_usage(session, "coaching", FAL_MODEL, response.usage)
+        except Exception:
+            # `record_llm_usage` is documented to never raise, but this
+            # call site is still guarded independently -- usage recording
+            # is a purely optional side effect and must never turn an
+            # already-successful API response into a failed one, even if
+            # that contract is ever violated (e.g. by a bug, or in tests).
+            logger.exception("record_llm_usage raised unexpectedly for call_site=coaching.")
     except Exception:
         logger.exception("Failed to generate coaching summary via fal.ai.")
         return None

@@ -1,6 +1,11 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine, select
+
 from app.coaching import _build_user_prompt, generate_coaching_summary
+from app.models import LlmUsage
 
 SAMPLE_ANALYSIS = [
     {
@@ -70,23 +75,36 @@ def test_build_user_prompt_reports_no_mistakes_when_only_engine_erred():
     assert "No blunders or mistakes were flagged in this game." in prompt
 
 
-def _mock_openai_response(text: str) -> MagicMock:
+def _mock_openai_response(text: str, usage: MagicMock | None = None) -> MagicMock:
     response = MagicMock()
     response.choices = [MagicMock(message=MagicMock(content=text))]
+    response.usage = usage
     return response
 
 
-def test_generate_coaching_summary_returns_none_without_api_key():
+@pytest.fixture()
+def session():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as s:
+        yield s
+
+
+def test_generate_coaching_summary_returns_none_without_api_key(session):
     with patch("app.coaching.settings") as mock_settings:
         mock_settings.fal_api_key = None
         with patch("app.coaching.OpenAI") as mock_openai_cls:
-            result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win")
+            result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win", session)
 
     assert result is None
     mock_openai_cls.assert_not_called()
 
 
-def test_generate_coaching_summary_returns_structured_dict_on_success():
+def test_generate_coaching_summary_returns_structured_dict_on_success(session):
     with patch("app.coaching.settings") as mock_settings:
         mock_settings.fal_api_key = "test-fal-key"
         with patch("app.coaching.OpenAI") as mock_openai_cls:
@@ -98,7 +116,7 @@ def test_generate_coaching_summary_returns_structured_dict_on_success():
             )
             mock_openai_cls.return_value = mock_client
 
-            result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win")
+            result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win", session)
 
     assert result == {
         "headline": "Hanging pieces after queen trades",
@@ -115,7 +133,7 @@ def test_generate_coaching_summary_returns_structured_dict_on_success():
     assert create_kwargs["max_tokens"] == 300
 
 
-def test_generate_coaching_summary_strips_markdown_code_fence():
+def test_generate_coaching_summary_strips_markdown_code_fence(session):
     with patch("app.coaching.settings") as mock_settings:
         mock_settings.fal_api_key = "test-fal-key"
         with patch("app.coaching.OpenAI") as mock_openai_cls:
@@ -126,7 +144,7 @@ def test_generate_coaching_summary_strips_markdown_code_fence():
             )
             mock_openai_cls.return_value = mock_client
 
-            result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win")
+            result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win", session)
 
     assert result == {
         "headline": "Queen safety",
@@ -135,7 +153,7 @@ def test_generate_coaching_summary_strips_markdown_code_fence():
     }
 
 
-def test_generate_coaching_summary_uses_raw_text_as_explanation_when_not_json():
+def test_generate_coaching_summary_uses_raw_text_as_explanation_when_not_json(session):
     with patch("app.coaching.settings") as mock_settings:
         mock_settings.fal_api_key = "test-fal-key"
         with patch("app.coaching.OpenAI") as mock_openai_cls:
@@ -145,7 +163,7 @@ def test_generate_coaching_summary_uses_raw_text_as_explanation_when_not_json():
             )
             mock_openai_cls.return_value = mock_client
 
-            result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win")
+            result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win", session)
 
     assert result == {
         "headline": None,
@@ -156,7 +174,7 @@ def test_generate_coaching_summary_uses_raw_text_as_explanation_when_not_json():
     }
 
 
-def test_generate_coaching_summary_returns_none_on_api_error():
+def test_generate_coaching_summary_returns_none_on_api_error(session):
     with patch("app.coaching.settings") as mock_settings:
         mock_settings.fal_api_key = "test-fal-key"
         with patch("app.coaching.OpenAI") as mock_openai_cls:
@@ -164,6 +182,49 @@ def test_generate_coaching_summary_returns_none_on_api_error():
             mock_client.chat.completions.create.side_effect = RuntimeError("boom")
             mock_openai_cls.return_value = mock_client
 
-            result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win")
+            result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win", session)
 
     assert result is None
+
+
+def test_generate_coaching_summary_records_llm_usage_on_success(session):
+    with patch("app.coaching.settings") as mock_settings:
+        mock_settings.fal_api_key = "test-fal-key"
+        with patch("app.coaching.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            usage = MagicMock(prompt_tokens=50, completion_tokens=20, total_tokens=70)
+            mock_client.chat.completions.create.return_value = _mock_openai_response(
+                '{"headline": "H", "explanation": "E", "recommendation": "R"}',
+                usage=usage,
+            )
+            mock_openai_cls.return_value = mock_client
+
+            generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win", session)
+
+    rows = session.exec(select(LlmUsage)).all()
+    assert len(rows) == 1
+    assert rows[0].call_site == "coaching"
+    assert rows[0].prompt_tokens == 50
+    assert rows[0].completion_tokens == 20
+
+
+def test_generate_coaching_summary_survives_record_llm_usage_raising(session):
+    with patch("app.coaching.settings") as mock_settings:
+        mock_settings.fal_api_key = "test-fal-key"
+        with patch("app.coaching.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            usage = MagicMock(prompt_tokens=50, completion_tokens=20, total_tokens=70)
+            mock_client.chat.completions.create.return_value = _mock_openai_response(
+                '{"headline": "H", "explanation": "E", "recommendation": "R"}',
+                usage=usage,
+            )
+            mock_openai_cls.return_value = mock_client
+
+            with patch(
+                "app.coaching.record_llm_usage", side_effect=RuntimeError("boom")
+            ):
+                result = generate_coaching_summary(
+                    "1. e4 Nf6", SAMPLE_ANALYSIS, "win", session
+                )
+
+    assert result == {"headline": "H", "explanation": "E", "recommendation": "R"}

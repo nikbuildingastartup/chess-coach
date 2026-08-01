@@ -184,7 +184,7 @@ def _compute_daily_focus(focus_id: int) -> None:
                 return
 
             aggregated = aggregate_weakness_data(games)
-            focus_text = generate_daily_focus(aggregated)
+            focus_text = generate_daily_focus(aggregated, session)
             practice_positions = extract_practice_positions(games, aggregated)
 
             focus.status = "ready"
