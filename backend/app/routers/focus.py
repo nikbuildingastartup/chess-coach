@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 from app.analysis_backfill import BACKFILL_LIMIT, backfill_recent_games
 from app.auth import require_auth
 from app.db import engine, get_session
-from app.focus import extract_practice_positions, generate_daily_focus
+from app.focus import PRACTICE_POSITIONS_MAX, extract_practice_positions, generate_daily_focus
 from app.models import DailyFocus, Game
 from app.weakness_profile import MIN_GAMES_FOR_PATTERN, aggregate_weakness_data
 
@@ -24,6 +24,9 @@ class PracticePosition(BaseModel):
     played_move: str
     best_move: str | None
     classification: str
+    game_id: int
+    move_number: int
+    side: str
 
 
 class FocusResponse(BaseModel):
@@ -185,7 +188,10 @@ def _compute_daily_focus(focus_id: int) -> None:
 
             aggregated = aggregate_weakness_data(games)
             focus_text = generate_daily_focus(aggregated)
-            practice_positions = extract_practice_positions(games, aggregated)
+            extraction = extract_practice_positions(
+                games, aggregated, session=session, max_positions=PRACTICE_POSITIONS_MAX
+            )
+            practice_positions = extraction["positions"]
 
             focus.status = "ready"
             focus.headline = focus_text.get("headline")
