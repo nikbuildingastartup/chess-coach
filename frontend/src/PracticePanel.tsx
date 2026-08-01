@@ -74,10 +74,21 @@ function PracticeBoard({
     setError(null);
   }, [positions]);
 
+  // PracticePanel re-renders PracticeBoard in place (no `key`) whenever a
+  // new puzzle set is fetched, so the board's own state must resync itself
+  // whenever the `positions` array identity changes — otherwise the last
+  // solved position from the old set would stay on screen indefinitely.
+  useEffect(() => {
+    setIndex(0);
+    chessRef.current = new Chess(positions[0].fen);
+    setFen(chessRef.current.fen());
+    setFeedback({ state: "idle" });
+    setError(null);
+  }, [positions]);
+
   const handleNextPosition = useCallback(() => {
     if (index + 1 >= positions.length) {
       onRequestNewSet();
-      setIndex(0);
       return;
     }
     const nextIndex = index + 1;
