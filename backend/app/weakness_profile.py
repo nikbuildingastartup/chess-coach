@@ -14,6 +14,11 @@ from app.models import Game
 # -- `GET /focus/today` falls back to an "insufficient_data" status instead.
 MIN_GAMES_FOR_PATTERN = 3
 
+# How many distinct (phase, classification) patterns to surface for
+# practice puzzle generation -- more than a handful stops being "your top
+# weaknesses" and starts being "every mistake you've ever made".
+MAX_TOP_PATTERNS = 3
+
 # Only these classifications count as "weaknesses" to aggregate here --
 # "inaccuracy" and "good" are too noisy/expected to drive a daily focus.
 FLAGGED_CLASSIFICATIONS = ("blunder", "mistake")
@@ -47,6 +52,11 @@ def aggregate_weakness_data(games: list[Game]) -> dict[str, Any]:
         sorted newest game first -- each a dict with `game_id`, `end_time`
         (ISO string), `move_number`, `san`, `side`, `classification`,
         `phase`, `eval_cp`, `best_move`.
+      - "top_patterns": list of up to `MAX_TOP_PATTERNS` `{"phase",
+        "classification", "count"}` dicts, ranked same as `top_pattern`.
+      - "moves_by_pattern": `{"<phase>:<classification>": [moves]}` dict
+        covering each pattern in `top_patterns`, with moves sorted newest
+        game first.
       - "affected_game_ids": sorted list of game ids with at least one
         flagged move (any pattern, not just the top one).
     """
@@ -88,18 +98,28 @@ def aggregate_weakness_data(games: list[Game]) -> dict[str, Any]:
             "counts_by_pattern": {},
             "top_pattern": None,
             "top_pattern_moves": [],
+            "top_patterns": [],
+            "moves_by_pattern": {},
             "affected_game_ids": [],
         }
 
-    top_phase, top_classification, top_count = _pick_top_pattern(counts, all_flagged)
+    top_patterns_ranked = _pick_top_patterns(counts, all_flagged, n=MAX_TOP_PATTERNS)
+    top_phase, top_classification, top_count = top_patterns_ranked[0]
 
-    top_pattern_moves = [
-        m
-        for m in all_flagged
-        if m["phase"] == top_phase and m["classification"] == top_classification
-    ]
-    # Newest game first (empty/None end_time sorts last).
-    top_pattern_moves.sort(key=lambda m: m["end_time"] or "", reverse=True)
+    def _moves_for(phase: str, classification: str) -> list[dict[str, Any]]:
+        moves = [
+            m for m in all_flagged if m["phase"] == phase and m["classification"] == classification
+        ]
+        # Newest game first (empty/None end_time sorts last).
+        moves.sort(key=lambda m: m["end_time"] or "", reverse=True)
+        return moves
+
+    top_pattern_moves = _moves_for(top_phase, top_classification)
+
+    moves_by_pattern = {
+        f"{phase}:{classification}": _moves_for(phase, classification)
+        for phase, classification, _count in top_patterns_ranked
+    }
 
     counts_by_pattern = {
         f"{phase}:{classification}": count for (phase, classification), count in counts.items()
@@ -115,18 +135,25 @@ def aggregate_weakness_data(games: list[Game]) -> dict[str, Any]:
             "count": top_count,
         },
         "top_pattern_moves": top_pattern_moves,
+        "top_patterns": [
+            {"phase": phase, "classification": classification, "count": count}
+            for phase, classification, count in top_patterns_ranked
+        ],
+        "moves_by_pattern": moves_by_pattern,
         "affected_game_ids": affected_game_ids,
     }
 
 
-def _pick_top_pattern(
-    counts: Counter[tuple[str, str]], all_flagged: list[dict[str, Any]]
-) -> tuple[str, str, int]:
-    """Pick the single most frequent (phase, classification) pattern,
-    breaking ties deterministically (blunder over mistake, then most-recent
-    occurrence) since `Counter.most_common` ties on insertion order only."""
-    max_count = max(counts.values())
-    candidates = [pc for pc, count in counts.items() if count == max_count]
+def _pick_top_patterns(
+    counts: Counter[tuple[str, str]], all_flagged: list[dict[str, Any]], n: int = 1
+) -> list[tuple[str, str, int]]:
+    """Rank (phase, classification) patterns by frequency, breaking ties
+    deterministically (blunder over mistake, then most-recent occurrence)
+    since `Counter.most_common` ties on insertion order only.
+
+    Returns up to `n` `(phase, classification, count)` tuples, highest
+    count first. With `n=1` this reproduces the old single-pattern
+    behavior exactly."""
 
     def _latest_end_time(pattern: tuple[str, str]) -> str:
         phase, classification = pattern
@@ -137,12 +164,13 @@ def _pick_top_pattern(
         ]
         return max(times) if times else ""
 
-    # Two stable sorts: recency (descending) applied first as the
-    # secondary key, then classification priority (ascending) applied last
-    # as the primary key -- stable sort preserves the recency ordering
-    # within each priority group.
-    candidates.sort(key=_latest_end_time, reverse=True)
-    candidates.sort(key=lambda pc: _CLASSIFICATION_PRIORITY.get(pc[1], 99))
+    # Three stable sorts, least-important key first: recency (tertiary),
+    # classification priority (secondary), count descending (primary).
+    # Stable sort means each later sort only breaks ties within groups the
+    # earlier sort already ordered.
+    ranked = list(counts.items())
+    ranked.sort(key=lambda item: _latest_end_time(item[0]), reverse=True)
+    ranked.sort(key=lambda item: _CLASSIFICATION_PRIORITY.get(item[0][1], 99))
+    ranked.sort(key=lambda item: item[1], reverse=True)
 
-    top_phase, top_classification = candidates[0]
-    return top_phase, top_classification, max_count
+    return [(phase, classification, count) for (phase, classification), count in ranked[:n]]

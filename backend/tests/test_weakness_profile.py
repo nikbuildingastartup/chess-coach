@@ -177,3 +177,80 @@ def test_min_games_for_pattern_constant_value():
     # Pinned per the design spec's Global Constraints -- a change here is a
     # deliberate scope change, not a silent tweak.
     assert MIN_GAMES_FOR_PATTERN == 3
+
+
+def test_aggregate_returns_up_to_three_ranked_top_patterns():
+    game = _game(
+        game_id=1,
+        end_time=BASE_TIME,
+        analysis=[
+            _entry(2, "a", "white", "blunder", "opening"),
+            _entry(4, "b", "white", "blunder", "opening"),
+            _entry(6, "c", "white", "blunder", "opening"),
+            _entry(10, "d", "white", "mistake", "middlegame"),
+            _entry(12, "e", "white", "mistake", "middlegame"),
+            _entry(40, "f", "white", "blunder", "endgame"),
+        ],
+    )
+
+    result = aggregate_weakness_data([game])
+
+    assert result["top_patterns"] == [
+        {"phase": "opening", "classification": "blunder", "count": 3},
+        {"phase": "middlegame", "classification": "mistake", "count": 2},
+        {"phase": "endgame", "classification": "blunder", "count": 1},
+    ]
+
+
+def test_aggregate_caps_top_patterns_at_three():
+    game = _game(
+        game_id=1,
+        end_time=BASE_TIME,
+        analysis=[
+            _entry(2, "a", "white", "blunder", "opening"),
+            _entry(10, "b", "white", "mistake", "middlegame"),
+            _entry(40, "c", "white", "blunder", "endgame"),
+            _entry(41, "d", "white", "mistake", "endgame"),
+        ],
+    )
+
+    result = aggregate_weakness_data([game])
+
+    assert len(result["top_patterns"]) == 3
+
+
+def test_aggregate_moves_by_pattern_covers_each_top_pattern_newest_first():
+    game1 = _game(
+        game_id=1,
+        end_time=BASE_TIME,
+        analysis=[_entry(10, "older-mistake", "white", "mistake", "middlegame")],
+    )
+    game2 = _game(
+        game_id=2,
+        end_time=BASE_TIME + timedelta(days=1),
+        analysis=[
+            _entry(2, "opening-blunder", "white", "blunder", "opening"),
+            _entry(10, "newer-mistake", "white", "mistake", "middlegame"),
+        ],
+    )
+
+    result = aggregate_weakness_data([game1, game2])
+
+    assert set(result["moves_by_pattern"].keys()) == {"opening:blunder", "middlegame:mistake"}
+    assert [m["san"] for m in result["moves_by_pattern"]["middlegame:mistake"]] == [
+        "newer-mistake",
+        "older-mistake",
+    ]
+
+
+def test_aggregate_top_patterns_empty_when_no_flagged_moves():
+    game = _game(
+        game_id=1,
+        end_time=BASE_TIME,
+        analysis=[_entry(1, "e4", "white", "good", "opening")],
+    )
+
+    result = aggregate_weakness_data([game])
+
+    assert result["top_patterns"] == []
+    assert result["moves_by_pattern"] == {}
