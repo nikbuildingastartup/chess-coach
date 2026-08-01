@@ -55,6 +55,14 @@
 
 .board-container {
   width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+/* Play tab: override to allow board expansion in two-column layout */
+.board-section .board-container {
+  max-width: none;
+  margin: 0;
 }
 
 .play-controls {
