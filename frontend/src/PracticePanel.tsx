@@ -240,12 +240,31 @@ function PracticePanel({ onUnauthorized }: { onUnauthorized: () => void }) {
   }
 
   if (!focus || focus.status === "computing") {
+    const total = focus?.progress_total ?? 0;
+    const current = focus?.progress_current ?? 0;
+    const hasProgress = total > 0;
+    const percent = hasProgress
+      ? Math.min(100, Math.round((current / total) * 100))
+      : 0;
+
     return (
-      <div className="status-bar">
-        <span className="status-dot" />
-        <span className="status-text">
-          Analyzing your recent games to build today's focus...
-        </span>
+      <div className="status-bar-column">
+        <div className="status-bar">
+          <span className="status-dot" />
+          <span className="status-text">
+            {hasProgress
+              ? `Analyzing your recent games... (${current} of ${total})`
+              : "Getting started..."}
+          </span>
+        </div>
+        {hasProgress && (
+          <div className="progress-bar-track">
+            <div
+              className="progress-bar-fill"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+        )}
       </div>
     );
   }

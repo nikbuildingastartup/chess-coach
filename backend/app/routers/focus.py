@@ -37,6 +37,8 @@ class FocusResponse(BaseModel):
     practice_positions_json: str | None = None
     created_at: datetime
     practice_positions: list[PracticePosition] = []
+    progress_current: int
+    progress_total: int
 
 
 def _to_response(focus: DailyFocus) -> FocusResponse:
@@ -58,6 +60,8 @@ def _to_response(focus: DailyFocus) -> FocusResponse:
         practice_positions_json=focus.practice_positions_json,
         created_at=focus.created_at,
         practice_positions=[PracticePosition(**p) for p in practice_positions_raw],
+        progress_current=focus.progress_current,
+        progress_total=focus.progress_total,
     )
 
 
@@ -103,6 +107,8 @@ def get_today_focus(
         # "insufficient_data" or "error" -- retry instead of caching for
         # the rest of the day.
         existing.status = "computing"
+        existing.progress_current = 0
+        existing.progress_total = 0
         session.add(existing)
         session.commit()
         session.refresh(existing)
@@ -148,15 +154,6 @@ def _compute_daily_focus(focus_id: int) -> None:
     """
     with Session(engine) as session:
         try:
-            backfill_recent_games(session)
-
-            games = session.exec(
-                select(Game)
-                .where(Game.analyzed == True)  # noqa: E712
-                .order_by(Game.end_time.desc())
-                .limit(BACKFILL_LIMIT)
-            ).all()
-
             focus = session.get(DailyFocus, focus_id)
             if focus is None:
                 logger.error(
@@ -164,6 +161,21 @@ def _compute_daily_focus(focus_id: int) -> None:
                     focus_id,
                 )
                 return
+
+            def _on_progress(current: int, total: int) -> None:
+                focus.progress_current = current
+                focus.progress_total = total
+                session.add(focus)
+                session.commit()
+
+            backfill_recent_games(session, on_progress=_on_progress)
+
+            games = session.exec(
+                select(Game)
+                .where(Game.analyzed == True)  # noqa: E712
+                .order_by(Game.end_time.desc())
+                .limit(BACKFILL_LIMIT)
+            ).all()
 
             if len(games) < MIN_GAMES_FOR_PATTERN:
                 focus.status = "insufficient_data"

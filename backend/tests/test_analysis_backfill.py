@@ -204,3 +204,69 @@ def test_backfill_returns_empty_list_when_nothing_to_analyze():
     session = _make_session()
     result = backfill_recent_games(session)
     assert result == []
+
+
+def test_backfill_calls_on_progress_with_zero_candidates():
+    session = _make_session()
+    calls: list[tuple[int, int]] = []
+
+    result = backfill_recent_games(session, on_progress=lambda current, total: calls.append((current, total)))
+
+    assert result == []
+    assert calls == [(0, 0)]
+
+
+def test_backfill_calls_on_progress_for_each_analyzed_game():
+    session = _make_session()
+    first = _game(end_time=BASE_TIME + timedelta(days=1), chesscom_game_id="first")
+    second = _game(end_time=BASE_TIME, chesscom_game_id="second")
+    session.add(first)
+    session.add(second)
+    session.commit()
+
+    calls: list[tuple[int, int]] = []
+
+    result = backfill_recent_games(session, on_progress=lambda current, total: calls.append((current, total)))
+
+    assert len(result) == 2
+    # One initial call with (0, total_candidates), then one call per
+    # analyzed game's commit with the running count.
+    assert calls == [(0, 2), (1, 2), (2, 2)]
+
+
+def test_backfill_on_progress_does_not_advance_for_skipped_games():
+    session = _make_session()
+    skipped = _game(
+        end_time=BASE_TIME + timedelta(days=1),
+        source="chesscom",
+        user_color=None,
+        chesscom_game_id="skipped",
+    )
+    analyzed = _game(end_time=BASE_TIME, chesscom_game_id="analyzed")
+    session.add(skipped)
+    session.add(analyzed)
+    session.commit()
+
+    calls: list[tuple[int, int]] = []
+
+    result = backfill_recent_games(session, on_progress=lambda current, total: calls.append((current, total)))
+
+    assert len(result) == 1
+    # total_candidates counts both candidates (2), but the skipped game
+    # never triggers its own progress call -- only the one analyzed game
+    # does, advancing current from 0 to 1.
+    assert calls == [(0, 2), (1, 2)]
+
+
+def test_backfill_without_on_progress_behaves_exactly_as_before():
+    """Existing callers that don't pass `on_progress` must be unaffected --
+    no callback is invoked and the return value is unchanged."""
+    session = _make_session()
+    game = _game(end_time=BASE_TIME, chesscom_game_id="g1")
+    session.add(game)
+    session.commit()
+
+    result = backfill_recent_games(session)
+
+    assert len(result) == 1
+    assert result[0].analyzed is True

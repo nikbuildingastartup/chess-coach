@@ -41,7 +41,7 @@ from sqlalchemy import create_engine, text
 
 import pytest
 
-from app.db import _check_no_interrupted_migration, _migrate_game_table
+from app.db import _check_no_interrupted_migration, _migrate_dailyfocus_table, _migrate_game_table
 from app.models import Game
 
 OLD_SCHEMA_SQL = """
@@ -254,6 +254,8 @@ def test_create_db_and_tables_creates_app_settings_and_daily_focus_from_scratch(
             "source_game_ids_json",
             "practice_positions_json",
             "created_at",
+            "progress_current",
+            "progress_total",
         }
 
 
@@ -540,3 +542,141 @@ def test_migration_backfill_is_idempotent_on_repeated_runs(tmp_path):
         assert row.user_color == "white"
         assert row.analyzed in (1, True)
         assert row.analysis_json == fresh_analysis_json
+
+
+# Shape of `dailyfocus` as left by an earlier startup of the already-merged
+# focus-generation branch: the table itself already exists (created back
+# then by `create_all()`, since `DailyFocus` predates this branch), but
+# without `progress_current`/`progress_total`, this branch's addition.
+DAILYFOCUS_PRE_PROGRESS_SCHEMA_SQL = """
+CREATE TABLE dailyfocus (
+    id INTEGER PRIMARY KEY,
+    date VARCHAR NOT NULL,
+    status VARCHAR NOT NULL,
+    headline VARCHAR,
+    explanation VARCHAR,
+    recommendation VARCHAR,
+    source_game_ids_json VARCHAR,
+    practice_positions_json VARCHAR,
+    created_at DATETIME NOT NULL
+)
+"""
+
+
+def _make_pre_progress_dailyfocus_db(path: str) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(DAILYFOCUS_PRE_PROGRESS_SCHEMA_SQL)
+        conn.execute(
+            "INSERT INTO dailyfocus "
+            "(date, status, headline, created_at) VALUES (?, ?, ?, ?)",
+            ("2026-01-01", "ready", "Existing headline", "2026-01-01 00:00:00+00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_migrate_dailyfocus_table_adds_progress_columns(tmp_path):
+    db_path = tmp_path / "pre_progress_dailyfocus.db"
+    _make_pre_progress_dailyfocus_db(str(db_path))
+
+    migration_engine = create_engine(f"sqlite:///{db_path}")
+    with migration_engine.begin() as conn:
+        _migrate_dailyfocus_table(conn)
+
+    with migration_engine.begin() as conn:
+        cols = {
+            row[1]: row for row in conn.exec_driver_sql("PRAGMA table_info(dailyfocus)").fetchall()
+        }
+        assert "progress_current" in cols
+        assert "progress_total" in cols
+
+        # Existing row survived the migration, backfilled to 0/0.
+        row = conn.execute(
+            text(
+                "SELECT headline, status, progress_current, progress_total "
+                "FROM dailyfocus WHERE id = 1"
+            )
+        ).one()
+        assert row.headline == "Existing headline"
+        assert row.status == "ready"
+        assert row.progress_current == 0
+        assert row.progress_total == 0
+
+
+def test_migrate_dailyfocus_table_is_a_no_op_against_a_fresh_current_schema_db(tmp_path):
+    from sqlmodel import SQLModel
+
+    db_path = tmp_path / "fresh_dailyfocus.db"
+    fresh_engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(fresh_engine)
+
+    with fresh_engine.begin() as conn:
+        _migrate_dailyfocus_table(conn)  # must not raise
+
+    with fresh_engine.begin() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(dailyfocus)").fetchall()}
+        assert "progress_current" in cols
+        assert "progress_total" in cols
+
+
+def test_migrate_dailyfocus_table_no_op_when_table_does_not_exist(tmp_path):
+    db_path = tmp_path / "empty_dailyfocus.db"
+    empty_engine = create_engine(f"sqlite:///{db_path}")
+    with empty_engine.begin() as conn:
+        _migrate_dailyfocus_table(conn)  # must not raise on a DB with no tables at all
+
+
+def test_migrate_dailyfocus_table_is_idempotent_on_repeated_runs(tmp_path):
+    db_path = tmp_path / "idempotent_dailyfocus.db"
+    _make_pre_progress_dailyfocus_db(str(db_path))
+
+    migration_engine = create_engine(f"sqlite:///{db_path}")
+    with migration_engine.begin() as conn:
+        _migrate_dailyfocus_table(conn)
+
+    with migration_engine.begin() as conn:
+        conn.exec_driver_sql(
+            "UPDATE dailyfocus SET progress_current = 3, progress_total = 10"
+        )
+
+    # A second migration run must not clobber the now-non-default values --
+    # the ALTERs must be skipped once the columns already exist.
+    with migration_engine.begin() as conn:
+        _migrate_dailyfocus_table(conn)
+
+    with migration_engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT progress_current, progress_total FROM dailyfocus")
+        ).one()
+        assert row.progress_current == 3
+        assert row.progress_total == 10
+
+
+def test_create_db_and_tables_migrates_a_pre_progress_dailyfocus_table(tmp_path, monkeypatch):
+    """End-to-end coverage via the real startup entry point: an existing
+    `dailyfocus` table (from an earlier startup of the already-merged
+    focus-generation branch) missing `progress_current`/`progress_total`
+    must be migrated in place, with existing rows preserved."""
+    import app.db as db_module
+
+    db_path = tmp_path / "pre_progress_dailyfocus_startup.db"
+    _make_pre_progress_dailyfocus_db(str(db_path))
+
+    real_engine = create_engine(f"sqlite:///{db_path}")
+    monkeypatch.setattr(db_module, "engine", real_engine)
+
+    db_module.create_db_and_tables()
+
+    with real_engine.begin() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(dailyfocus)").fetchall()}
+        assert "progress_current" in cols
+        assert "progress_total" in cols
+
+        row = conn.execute(
+            text("SELECT headline, progress_current, progress_total FROM dailyfocus WHERE id = 1")
+        ).one()
+        assert row.headline == "Existing headline"
+        assert row.progress_current == 0
+        assert row.progress_total == 0

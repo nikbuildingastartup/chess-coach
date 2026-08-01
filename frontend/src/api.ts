@@ -94,6 +94,8 @@ export interface DailyFocus {
   recommendation: string | null;
   created_at: string;
   practice_positions: PracticePosition[];
+  progress_current: number;
+  progress_total: number;
 }
 
 export interface CheckMoveResult {

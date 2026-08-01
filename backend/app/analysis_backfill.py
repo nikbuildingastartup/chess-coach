@@ -7,6 +7,7 @@ everything unanalyzed in one go.
 
 import json
 import logging
+from collections.abc import Callable
 
 from sqlmodel import Session, select
 
@@ -21,7 +22,11 @@ logger = logging.getLogger(__name__)
 BACKFILL_LIMIT = 10
 
 
-def backfill_recent_games(session: Session, limit: int = BACKFILL_LIMIT) -> list[Game]:
+def backfill_recent_games(
+    session: Session,
+    limit: int = BACKFILL_LIMIT,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[Game]:
     """Analyze the most recently-ended not-yet-analyzed games.
 
     Selects up to `limit` games with `analyzed == False`, most recent
@@ -45,6 +50,16 @@ def backfill_recent_games(session: Session, limit: int = BACKFILL_LIMIT) -> list
             number guaranteed to be analyzed -- skipped games still count
             against this limit, since they were among the most recent
             unanalyzed candidates).
+        on_progress: Optional callback invoked with `(games_done_so_far,
+            total_candidates)`. Called once up front with `(0,
+            total_candidates)` before any analysis starts, then again after
+            each individual analyzed game's commit, with the running count
+            of games analyzed so far. `total_candidates` is the number of
+            candidate rows selected (i.e. `len(candidates)`, which may be
+            less than `limit`), not the number that will actually be
+            analyzed -- skipped games (see above) don't trigger an
+            additional call, since they never commit. Not called at all
+            when left as the default `None`.
 
     Returns:
         The games that were actually analyzed (in the order they were
@@ -54,6 +69,10 @@ def backfill_recent_games(session: Session, limit: int = BACKFILL_LIMIT) -> list
     candidates = session.exec(
         select(Game).where(Game.analyzed == False).order_by(Game.end_time.desc()).limit(limit)  # noqa: E712
     ).all()
+
+    total_candidates = len(candidates)
+    if on_progress is not None:
+        on_progress(0, total_candidates)
 
     analyzed_games: list[Game] = []
 
@@ -74,5 +93,8 @@ def backfill_recent_games(session: Session, limit: int = BACKFILL_LIMIT) -> list
         session.commit()
         session.refresh(game)
         analyzed_games.append(game)
+
+        if on_progress is not None:
+            on_progress(len(analyzed_games), total_candidates)
 
     return analyzed_games
