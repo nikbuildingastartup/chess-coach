@@ -34,6 +34,11 @@ BLUNDER_THRESHOLD_CP = 200
 MISTAKE_THRESHOLD_CP = 100
 INACCURACY_THRESHOLD_CP = 50
 
+# Centipawn-drop tolerance (mover's perspective) below which a Practice
+# Module move is still accepted as "correct" even if it doesn't exactly
+# match Stockfish's top choice -- multiple moves are often equally sound.
+PRACTICE_CORRECT_TOLERANCE_CP = 50
+
 # Fullmove-number thresholds for coarse game-phase tagging. A move with
 # `move_number <= OPENING_MOVE_LIMIT` is "opening"; up through
 # `MIDDLEGAME_MOVE_LIMIT` is "middlegame"; anything later is "endgame".
@@ -139,6 +144,61 @@ def fen_before_move(pgn: str, move_number: int, side: str) -> str:
         f"PGN never reaches move_number={move_number}, side={side!r} "
         "before the game ends."
     )
+
+
+def check_move(fen: str, move_uci: str) -> dict:
+    """Check whether a single played move is "correct" for the Practice
+    Module: it matches Stockfish's best move, or is close enough in
+    evaluation (within `PRACTICE_CORRECT_TOLERANCE_CP`) to still count.
+
+    Mirrors `analyze_game`'s before/after `engine.analyse` pattern, but for
+    a single position + move instead of a whole game.
+
+    Args:
+        fen: Position to check the move in, in FEN notation.
+        move_uci: The played move in UCI notation (e.g. "e2e4", or
+            "e7e8q" for a promotion).
+
+    Returns:
+        A dict with "correct" (bool), "best_move" (UCI str, or None if the
+        engine reports no principal variation), and "played_eval_cp" (the
+        position's evaluation after the played move, from the mover's
+        perspective).
+
+    Raises:
+        ValueError: if `move_uci` doesn't parse as a UCI move, or parses
+            but isn't legal in the given position.
+    """
+    board = chess.Board(fen)
+
+    try:
+        move = chess.Move.from_uci(move_uci)
+    except ValueError as e:
+        raise ValueError(f"Malformed UCI move: {move_uci!r}") from e
+
+    if move not in board.legal_moves:
+        raise ValueError(f"Illegal move {move_uci!r} in position {fen!r}")
+
+    with chess.engine.SimpleEngine.popen_uci(settings.stockfish_path) as engine:
+        limit = chess.engine.Limit(time=ANALYSIS_TIME_SECONDS)
+
+        info_before = engine.analyse(board, limit)
+        eval_before_mover_pov = _score_to_cp(info_before["score"].relative)
+        pv = info_before.get("pv")
+        best_move_uci = pv[0].uci() if pv else None
+
+        board.push(move)
+        info_after = engine.analyse(board, limit)
+        eval_after_mover_pov = -_score_to_cp(info_after["score"].relative)
+
+    drop_cp = eval_before_mover_pov - eval_after_mover_pov
+    correct = (move.uci() == best_move_uci) or (drop_cp <= PRACTICE_CORRECT_TOLERANCE_CP)
+
+    return {
+        "correct": correct,
+        "best_move": best_move_uci,
+        "played_eval_cp": eval_after_mover_pov,
+    }
 
 
 def analyze_game(pgn: str) -> list[dict]:
