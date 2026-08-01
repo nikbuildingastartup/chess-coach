@@ -35,15 +35,21 @@ class SaveGameRequest(BaseModel):
     result: Literal["win", "loss", "draw"]
 
 
+class Coaching(BaseModel):
+    headline: str | None = None
+    explanation: str | None = None
+    recommendation: str | None = None
+
+
 class SaveGameResponse(BaseModel):
     game_id: int
     analysis: list[dict[str, Any]]
-    coaching_summary: str | None = None
+    coaching: Coaching | None = None
 
 
 class GameAnalysisResponse(BaseModel):
     analysis: list[dict[str, Any]]
-    coaching_summary: str | None = None
+    coaching: Coaching | None = None
 
 
 @router.post("/games", response_model=SaveGameResponse)
@@ -79,14 +85,12 @@ def save_played_game(
             "assigned a primary key."
         )
 
-    coaching_summary = generate_coaching_summary(body.pgn, analysis, body.result)
-    game.coaching_summary = coaching_summary
+    coaching = generate_coaching_summary(body.pgn, analysis, body.result)
+    game.coaching_summary = json.dumps(coaching) if coaching is not None else None
     session.add(game)
     session.commit()
 
-    return SaveGameResponse(
-        game_id=game.id, analysis=analysis, coaching_summary=coaching_summary
-    )
+    return SaveGameResponse(game_id=game.id, analysis=analysis, coaching=coaching)
 
 
 @router.get("/games/{game_id}/analysis", response_model=GameAnalysisResponse)
@@ -100,6 +104,6 @@ def get_game_analysis(
             detail="No analysis found for that game.",
         )
 
-    return GameAnalysisResponse(
-        analysis=json.loads(game.analysis_json), coaching_summary=game.coaching_summary
-    )
+    coaching = json.loads(game.coaching_summary) if game.coaching_summary else None
+
+    return GameAnalysisResponse(analysis=json.loads(game.analysis_json), coaching=coaching)

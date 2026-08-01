@@ -1,3 +1,4 @@
+import json
 from unittest.mock import patch
 
 import chess
@@ -37,6 +38,13 @@ def db_engine():
     return engine
 
 
+DEFAULT_MOCKED_COACHING = {
+    "headline": "Default mocked headline",
+    "explanation": "Default mocked coaching summary.",
+    "recommendation": "Default mocked recommendation.",
+}
+
+
 @pytest.fixture(autouse=True)
 def mock_coaching_summary():
     """Prevent any test from making a real fal.ai network call.
@@ -50,7 +58,7 @@ def mock_coaching_summary():
     """
     with patch(
         "app.routers.play.generate_coaching_summary",
-        return_value="Default mocked coaching summary.",
+        return_value=DEFAULT_MOCKED_COACHING,
     ) as mock:
         yield mock
 
@@ -132,13 +140,17 @@ def test_save_game_persists_it_with_correct_fields_and_returns_analysis(db_clien
         assert game.result == "win"
         assert game.analyzed is True
         assert game.analysis_json is not None
-        assert game.coaching_summary == "Default mocked coaching summary."
+        assert json.loads(game.coaching_summary) == DEFAULT_MOCKED_COACHING
 
 
 def test_save_game_stores_and_returns_coaching_summary_on_success(
     db_client, db_engine, mock_coaching_summary
 ):
-    mock_coaching_summary.return_value = "Watch out for hanging pieces after queen trades."
+    mock_coaching_summary.return_value = {
+        "headline": "Queen safety",
+        "explanation": "Watch out for hanging pieces after queen trades.",
+        "recommendation": "Check captures before moving.",
+    }
 
     response = db_client.post(
         "/play/games",
@@ -148,14 +160,22 @@ def test_save_game_stores_and_returns_coaching_summary_on_success(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["coaching_summary"] == "Watch out for hanging pieces after queen trades."
+    assert body["coaching"] == {
+        "headline": "Queen safety",
+        "explanation": "Watch out for hanging pieces after queen trades.",
+        "recommendation": "Check captures before moving.",
+    }
 
     with Session(db_engine) as session:
         game = session.exec(select(Game).where(Game.id == body["game_id"])).one()
-        assert game.coaching_summary == "Watch out for hanging pieces after queen trades."
+        assert json.loads(game.coaching_summary) == {
+            "headline": "Queen safety",
+            "explanation": "Watch out for hanging pieces after queen trades.",
+            "recommendation": "Check captures before moving.",
+        }
 
 
-def test_save_game_succeeds_with_null_coaching_summary_when_generation_fails(
+def test_save_game_succeeds_with_null_coaching_when_generation_fails(
     db_client, db_engine, mock_coaching_summary
 ):
     # `generate_coaching_summary` itself is documented to swallow errors and
@@ -171,7 +191,7 @@ def test_save_game_succeeds_with_null_coaching_summary_when_generation_fails(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["coaching_summary"] is None
+    assert body["coaching"] is None
     assert len(body["analysis"]) == 6
 
     with Session(db_engine) as session:
@@ -199,8 +219,8 @@ def test_get_game_analysis_returns_saved_analysis(db_client):
     assert response.status_code == 200
     body = response.json()
     assert body["analysis"] == save_response.json()["analysis"]
-    assert body["coaching_summary"] == save_response.json()["coaching_summary"]
-    assert body["coaching_summary"] == "Default mocked coaching summary."
+    assert body["coaching"] == save_response.json()["coaching"]
+    assert body["coaching"] == DEFAULT_MOCKED_COACHING
 
 
 def test_get_game_analysis_without_auth_returns_401(db_client):

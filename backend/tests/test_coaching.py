@@ -86,7 +86,56 @@ def test_generate_coaching_summary_returns_none_without_api_key():
     mock_openai_cls.assert_not_called()
 
 
-def test_generate_coaching_summary_returns_text_on_success():
+def test_generate_coaching_summary_returns_structured_dict_on_success():
+    with patch("app.coaching.settings") as mock_settings:
+        mock_settings.fal_api_key = "test-fal-key"
+        with patch("app.coaching.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = _mock_openai_response(
+                '{"headline": "Hanging pieces after queen trades", '
+                '"explanation": "You keep hanging your queen to simple tactics.", '
+                '"recommendation": "Slow down and check captures before moving."}'
+            )
+            mock_openai_cls.return_value = mock_client
+
+            result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win")
+
+    assert result == {
+        "headline": "Hanging pieces after queen trades",
+        "explanation": "You keep hanging your queen to simple tactics.",
+        "recommendation": "Slow down and check captures before moving.",
+    }
+    mock_openai_cls.assert_called_once()
+    _, call_kwargs = mock_openai_cls.call_args
+    assert call_kwargs["base_url"] == "https://fal.run/openrouter/router/openai/v1"
+    assert call_kwargs["default_headers"] == {"Authorization": "Key test-fal-key"}
+
+    create_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert create_kwargs["model"] == "anthropic/claude-haiku-4.5"
+    assert create_kwargs["max_tokens"] == 300
+
+
+def test_generate_coaching_summary_strips_markdown_code_fence():
+    with patch("app.coaching.settings") as mock_settings:
+        mock_settings.fal_api_key = "test-fal-key"
+        with patch("app.coaching.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = _mock_openai_response(
+                '```json\n{"headline": "Queen safety", "explanation": "...", '
+                '"recommendation": "..."}\n```'
+            )
+            mock_openai_cls.return_value = mock_client
+
+            result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win")
+
+    assert result == {
+        "headline": "Queen safety",
+        "explanation": "...",
+        "recommendation": "...",
+    }
+
+
+def test_generate_coaching_summary_uses_raw_text_as_explanation_when_not_json():
     with patch("app.coaching.settings") as mock_settings:
         mock_settings.fal_api_key = "test-fal-key"
         with patch("app.coaching.OpenAI") as mock_openai_cls:
@@ -98,17 +147,13 @@ def test_generate_coaching_summary_returns_text_on_success():
 
             result = generate_coaching_summary("1. e4 Nf6", SAMPLE_ANALYSIS, "win")
 
-    assert result == (
-        "You keep hanging your queen to simple tactics -- slow down and check captures."
-    )
-    mock_openai_cls.assert_called_once()
-    _, call_kwargs = mock_openai_cls.call_args
-    assert call_kwargs["base_url"] == "https://fal.run/openrouter/router/openai/v1"
-    assert call_kwargs["default_headers"] == {"Authorization": "Key test-fal-key"}
-
-    create_kwargs = mock_client.chat.completions.create.call_args.kwargs
-    assert create_kwargs["model"] == "anthropic/claude-haiku-4.5"
-    assert create_kwargs["max_tokens"] == 300
+    assert result == {
+        "headline": None,
+        "explanation": (
+            "You keep hanging your queen to simple tactics -- slow down and check captures."
+        ),
+        "recommendation": None,
+    }
 
 
 def test_generate_coaching_summary_returns_none_on_api_error():

@@ -3,11 +3,12 @@ deterministic aggregation into a structured, coached recommendation (via
 fal.ai/Haiku, with a deterministic non-LLM fallback), plus extraction of
 concrete practice positions from the flagged moves behind it.
 
-Kept separate from `app.coaching` (per-game coaching text) so Task 4's
-restructuring of `generate_coaching_summary` doesn't collide with this.
+Kept separate from `app.coaching` (per-game coaching text) -- the two
+generate structurally identical `{headline, explanation, recommendation}`
+output but from different inputs (cross-game stats vs. one game's PGN).
+The shared tolerant-JSON-parsing logic lives in `app.llm_json`.
 """
 
-import json
 import logging
 from typing import Any
 
@@ -16,6 +17,7 @@ from openai import OpenAI
 from app.chess_engine import fen_before_move
 from app.coaching import FAL_BASE_URL, FAL_MODEL
 from app.config import settings
+from app.llm_json import parse_structured_llm_response
 from app.models import Game
 
 logger = logging.getLogger(__name__)
@@ -60,40 +62,6 @@ def _build_user_prompt(aggregated_data: dict[str, Any]) -> str:
 
     lines.append("\nRespond with the JSON object now.")
     return "\n".join(lines)
-
-
-def _parse_focus_response(content: str) -> dict[str, str | None] | None:
-    """Tolerantly parse the model's response into
-    `{headline, explanation, recommendation}`.
-
-    Returns `None` if no valid JSON object could be extracted at all --
-    callers fall back to using the raw text as `explanation` in that case
-    (see the design spec's Global Constraints), never raising.
-    """
-    text = content.strip()
-    if text.startswith("```"):
-        text = text.strip("`").strip()
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        return None
-
-    try:
-        parsed = json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-
-    if not isinstance(parsed, dict):
-        return None
-
-    return {
-        "headline": parsed.get("headline"),
-        "explanation": parsed.get("explanation"),
-        "recommendation": parsed.get("recommendation"),
-    }
 
 
 def _fallback_focus(aggregated_data: dict[str, Any]) -> dict[str, str | None]:
@@ -170,7 +138,7 @@ def generate_daily_focus(aggregated_data: dict[str, Any]) -> dict[str, str | Non
         logger.exception("Failed to generate daily focus via fal.ai.")
         return _fallback_focus(aggregated_data)
 
-    parsed = _parse_focus_response(content)
+    parsed = parse_structured_llm_response(content)
     if parsed is None:
         logger.warning(
             "Daily focus response was not valid JSON; using raw text as explanation."

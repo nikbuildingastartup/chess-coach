@@ -4,6 +4,7 @@ from typing import Any
 from openai import OpenAI
 
 from app.config import settings
+from app.llm_json import parse_structured_llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -12,11 +13,16 @@ FAL_MODEL = "anthropic/claude-haiku-4.5"
 
 SYSTEM_PROMPT = (
     "You are an encouraging, direct chess coach. Given one game's move-by-move "
-    "analysis, write 2-4 sentences in English that name the most important "
-    "recurring mistakes in THIS game. Do not claim these are patterns across "
-    "multiple games -- you are only shown one game here. Be specific and "
-    "actionable, not generic. The player you are coaching played White -- "
-    "only comment on White's moves, never on the opponent's (Black's) moves."
+    "analysis, respond with STRICT JSON only -- no markdown, no prose outside "
+    "the JSON -- with exactly these string fields: \"headline\" (a short, "
+    "specific name for the most important mistake pattern in THIS game, under "
+    "10 words), \"explanation\" (2-4 sentences naming the most important "
+    "recurring mistakes in THIS game -- do not claim these are patterns across "
+    "multiple games, you are only shown one game here; be specific and "
+    "actionable, not generic), and \"recommendation\" (one concrete, "
+    "actionable next step the player can practice). The player you are "
+    "coaching played White -- only comment on White's moves, never on the "
+    "opponent's (Black's) moves. Do not wrap the JSON in a code fence."
 )
 
 # The human always plays White in the Play Module (see PlayPanel.tsx); the
@@ -54,17 +60,29 @@ def _build_user_prompt(pgn: str, analysis: list[dict[str, Any]], result: str) ->
         f"Game result: {result}\n\n"
         f"PGN:\n{pgn}\n\n"
         f"Flagged moves (White's only):\n{mistakes_section}\n\n"
-        "Write the coaching paragraph now."
+        "Respond with the JSON object now."
     )
 
 
-def generate_coaching_summary(pgn: str, analysis: list[dict[str, Any]], result: str) -> str | None:
-    """Generate a short natural-language coaching paragraph for one game.
+def generate_coaching_summary(
+    pgn: str, analysis: list[dict[str, Any]], result: str
+) -> dict[str, str | None] | None:
+    """Generate a structured `{headline, explanation, recommendation}`
+    coaching summary for one game.
 
     Returns None (logged, never raised) if no fal.ai API key is configured
-    or if the API call fails for any reason -- callers must treat this as a
-    purely optional enhancement on top of the always-available structured
-    `analysis`.
+    or if the API call itself fails for any reason -- callers must treat
+    this as a purely optional enhancement on top of the always-available
+    structured `analysis`, with no non-LLM fallback text (unlike
+    `app.focus.generate_daily_focus`, which does have a stats-based
+    fallback -- there's no equivalent deterministic summary to build for a
+    single game's flagged moves, so "no summary" is the right degradation
+    here).
+
+    If the API call succeeds but the response isn't valid JSON, the raw
+    response text is used as `explanation` (mirroring
+    `generate_daily_focus`'s tolerant-parse fallback) with
+    `headline`/`recommendation` left `None`, rather than discarding it.
     """
     if not settings.fal_api_key:
         logger.info("Skipping coaching summary generation: no FAL_KEY configured.")
@@ -86,8 +104,16 @@ def generate_coaching_summary(pgn: str, analysis: list[dict[str, Any]], result: 
             ],
             max_tokens=300,
         )
-        content = response.choices[0].message.content
-        return content.strip() if content else None
+        content = response.choices[0].message.content or ""
     except Exception:
         logger.exception("Failed to generate coaching summary via fal.ai.")
         return None
+
+    parsed = parse_structured_llm_response(content)
+    if parsed is None:
+        logger.warning(
+            "Coaching summary response was not valid JSON; using raw text as explanation."
+        )
+        return {"headline": None, "explanation": content.strip(), "recommendation": None}
+
+    return parsed
