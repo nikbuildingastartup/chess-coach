@@ -5,8 +5,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db import create_db_and_tables
+from app.routers.focus import router as focus_router
 from app.routers.games import router as games_router
 from app.routers.play import router as play_router
+from app.routers.practice import router as practice_router
 
 
 @asynccontextmanager
@@ -28,6 +30,8 @@ app.add_middleware(
 
 app.include_router(games_router)
 app.include_router(play_router)
+app.include_router(focus_router)
+app.include_router(practice_router)
 
 
 @app.get("/health")

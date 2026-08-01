@@ -1,4 +1,13 @@
-from app.chess_engine import analyze_game
+import chess
+import pytest
+
+from app.chess_engine import (
+    MIDDLEGAME_MOVE_LIMIT,
+    OPENING_MOVE_LIMIT,
+    _classify_phase,
+    analyze_game,
+    fen_before_move,
+)
 
 # 3. Qxf6?? hangs the queen for a knight: gxf6 recaptures it for free.
 # This is a textbook blunder we can predict the classification of without
@@ -59,10 +68,57 @@ def test_analyze_game_entries_have_expected_shape():
             "classification",
             "eval_cp",
             "best_move",
+            "phase",
         }
         assert entry["side"] in ("white", "black")
         assert entry["classification"] in ("blunder", "mistake", "inaccuracy", "good")
         assert isinstance(entry["eval_cp"], int)
+        assert entry["phase"] in ("opening", "middlegame", "endgame")
+
+
+def test_analyze_game_tags_phase_as_opening_for_all_moves_in_a_short_game():
+    # BLUNDERING_PGN only reaches move 3, well within OPENING_MOVE_LIMIT (10).
+    analysis = analyze_game(BLUNDERING_PGN)
+
+    assert all(entry["move_number"] <= OPENING_MOVE_LIMIT for entry in analysis)
+    assert all(entry["phase"] == "opening" for entry in analysis)
+
+
+def test_classify_phase_thresholds():
+    assert _classify_phase(1) == "opening"
+    assert _classify_phase(OPENING_MOVE_LIMIT) == "opening"
+    assert _classify_phase(OPENING_MOVE_LIMIT + 1) == "middlegame"
+    assert _classify_phase(MIDDLEGAME_MOVE_LIMIT) == "middlegame"
+    assert _classify_phase(MIDDLEGAME_MOVE_LIMIT + 1) == "endgame"
+
+
+def test_fen_before_move_returns_position_right_before_the_target_half_move():
+    # 3. Qxf6?? is White's 3rd move -- the FEN right before it must have
+    # White to move, move 3, and the queen still on f3 (not yet captured
+    # on f6).
+    fen = fen_before_move(BLUNDERING_PGN, move_number=3, side="white")
+
+    board_before = chess.Board(fen)
+    assert board_before.turn is True  # White to move
+    assert board_before.fullmove_number == 3
+    assert board_before.piece_at(chess.parse_square("f3")) is not None
+
+
+def test_fen_before_move_matches_board_state_reached_by_manual_replay():
+    fen = fen_before_move(BLUNDERING_PGN, move_number=2, side="black")
+
+    # Manually replay to right before Black's 2nd move (2... Nc6) and
+    # compare FENs directly.
+    board = chess.Board()
+    board.push_san("e4")
+    board.push_san("Nf6")
+    board.push_san("Qf3")
+    assert fen == board.fen()
+
+
+def test_fen_before_move_raises_when_target_is_never_reached():
+    with pytest.raises(RuntimeError):
+        fen_before_move(BLUNDERING_PGN, move_number=50, side="white")
 
 
 def test_analyze_game_returns_empty_list_for_empty_pgn():

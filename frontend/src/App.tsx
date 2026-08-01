@@ -9,6 +9,7 @@ import {
   type Game,
 } from "./api";
 import PlayPanel from "./PlayPanel";
+import PracticePanel from "./PracticePanel";
 import "./App.css";
 
 function TokenGate({ onSubmit }: { onSubmit: (token: string) => void }) {
@@ -184,14 +185,14 @@ function SyncPanel({
   );
 }
 
-type Tab = "sync" | "play";
+type Tab = "sync" | "play" | "practice";
 
 const NAV_TABS: { key: Tab | null; label: string }[] = [
   { key: null, label: "Auth" },
   { key: null, label: "Cold start" },
   { key: "sync", label: "Sync" },
   { key: "play", label: "Play" },
-  { key: null, label: "Daily focus" },
+  { key: "practice", label: "Practice" },
 ];
 
 function TopNav({
@@ -294,16 +295,28 @@ function App() {
             {gamesError && <p className="sync-error">{gamesError}</p>}
             <GamesList games={games} />
           </div>
-          <button type="button" className="focus-button" disabled>
+          <button
+            type="button"
+            className="focus-button"
+            onClick={() => setActiveTab("practice")}
+          >
             See today's focus
           </button>
         </div>
-      ) : (
+      ) : activeTab === "play" ? (
         <div className="app">
           <p className="eyebrow">Play</p>
           <h1>Play vs. the engine</h1>
           <div className="card">
             <PlayPanel onUnauthorized={handleUnauthorized} />
+          </div>
+        </div>
+      ) : (
+        <div className="app">
+          <p className="eyebrow">Practice</p>
+          <h1>Today's focus</h1>
+          <div className="card">
+            <PracticePanel onUnauthorized={handleUnauthorized} />
           </div>
         </div>
       )}

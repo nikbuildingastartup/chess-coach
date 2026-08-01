@@ -196,7 +196,7 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
 
           <GameTips
             analysis={savedGame.analysis}
-            coachingSummary={savedGame.coaching_summary}
+            coaching={savedGame.coaching}
             onPlayAgain={handleNewGame}
           />
         </>

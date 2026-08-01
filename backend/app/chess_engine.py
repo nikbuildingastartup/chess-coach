@@ -34,6 +34,19 @@ BLUNDER_THRESHOLD_CP = 200
 MISTAKE_THRESHOLD_CP = 100
 INACCURACY_THRESHOLD_CP = 50
 
+# Centipawn-drop tolerance (mover's perspective) below which a Practice
+# Module move is still accepted as "correct" even if it doesn't exactly
+# match Stockfish's top choice -- multiple moves are often equally sound.
+PRACTICE_CORRECT_TOLERANCE_CP = 30
+
+# Fullmove-number thresholds for coarse game-phase tagging. A move with
+# `move_number <= OPENING_MOVE_LIMIT` is "opening"; up through
+# `MIDDLEGAME_MOVE_LIMIT` is "middlegame"; anything later is "endgame".
+# Deliberately simple (move-count based, not material-based) -- good enough
+# for aggregating weaknesses by phase, not a precise phase detector.
+OPENING_MOVE_LIMIT = 10
+MIDDLEGAME_MOVE_LIMIT = 30
+
 
 def get_engine_move(fen: str, skill: str) -> str:
     """Ask Stockfish for a move in the given position.
@@ -81,6 +94,111 @@ def _classify(drop_cp: int) -> str:
     if drop_cp >= INACCURACY_THRESHOLD_CP:
         return "inaccuracy"
     return "good"
+
+
+def _classify_phase(move_number: int) -> str:
+    """Classify a half-move's game phase from its (fullmove-number) index."""
+    if move_number <= OPENING_MOVE_LIMIT:
+        return "opening"
+    if move_number <= MIDDLEGAME_MOVE_LIMIT:
+        return "middlegame"
+    return "endgame"
+
+
+def fen_before_move(pgn: str, move_number: int, side: str) -> str:
+    """Replay a PGN and return the FEN of the position right before a given
+    half-move (identified by fullmove number + side to move).
+
+    Used by the Practice Module (a later task) to reconstruct the exact
+    position a recorded mistake was made in, so it can be presented as a
+    puzzle.
+
+    Args:
+        pgn: The game's PGN, as stored on `Game.pgn`.
+        move_number: The fullmove number of the target half-move (matches
+            `analyze_game`'s `"move_number"` field, i.e. `board.fullmove_number`
+            at the time that half-move was played).
+        side: "white" or "black" -- which side made the target half-move
+            (matches `analyze_game`'s `"side"` field).
+
+    Returns:
+        The FEN of the position immediately before the target half-move was
+        played.
+
+    Raises:
+        RuntimeError: if the PGN can't be parsed, or the game doesn't reach
+            a position matching (move_number, side) before ending.
+    """
+    game = chess.pgn.read_game(io.StringIO(pgn))
+    if game is None:
+        raise RuntimeError(f"Could not parse PGN into a game: {pgn!r}")
+    board = game.board()
+    target_color = chess.WHITE if side == "white" else chess.BLACK
+
+    for move in game.mainline_moves():
+        if board.fullmove_number == move_number and board.turn == target_color:
+            return board.fen()
+        board.push(move)
+
+    raise RuntimeError(
+        f"PGN never reaches move_number={move_number}, side={side!r} "
+        "before the game ends."
+    )
+
+
+def check_move(fen: str, move_uci: str) -> dict:
+    """Check whether a single played move is "correct" for the Practice
+    Module: it matches Stockfish's best move, or is close enough in
+    evaluation (within `PRACTICE_CORRECT_TOLERANCE_CP`) to still count.
+
+    Mirrors `analyze_game`'s before/after `engine.analyse` pattern, but for
+    a single position + move instead of a whole game.
+
+    Args:
+        fen: Position to check the move in, in FEN notation.
+        move_uci: The played move in UCI notation (e.g. "e2e4", or
+            "e7e8q" for a promotion).
+
+    Returns:
+        A dict with "correct" (bool), "best_move" (UCI str, or None if the
+        engine reports no principal variation), and "played_eval_cp" (the
+        position's evaluation after the played move, from the mover's
+        perspective).
+
+    Raises:
+        ValueError: if `move_uci` doesn't parse as a UCI move, or parses
+            but isn't legal in the given position.
+    """
+    board = chess.Board(fen)
+
+    try:
+        move = chess.Move.from_uci(move_uci)
+    except ValueError as e:
+        raise ValueError(f"Malformed UCI move: {move_uci!r}") from e
+
+    if move not in board.legal_moves:
+        raise ValueError(f"Illegal move {move_uci!r} in position {fen!r}")
+
+    with chess.engine.SimpleEngine.popen_uci(settings.stockfish_path) as engine:
+        limit = chess.engine.Limit(time=ANALYSIS_TIME_SECONDS)
+
+        info_before = engine.analyse(board, limit)
+        eval_before_mover_pov = _score_to_cp(info_before["score"].relative)
+        pv = info_before.get("pv")
+        best_move_uci = pv[0].uci() if pv else None
+
+        board.push(move)
+        info_after = engine.analyse(board, limit)
+        eval_after_mover_pov = -_score_to_cp(info_after["score"].relative)
+
+    drop_cp = eval_before_mover_pov - eval_after_mover_pov
+    correct = (move.uci() == best_move_uci) or (drop_cp <= PRACTICE_CORRECT_TOLERANCE_CP)
+
+    return {
+        "correct": correct,
+        "best_move": best_move_uci,
+        "played_eval_cp": eval_after_mover_pov,
+    }
 
 
 def analyze_game(pgn: str) -> list[dict]:
@@ -144,6 +262,7 @@ def analyze_game(pgn: str) -> list[dict]:
                     "classification": classification,
                     "eval_cp": eval_after_mover_pov,
                     "best_move": best_move_san if classification != "good" else None,
+                    "phase": _classify_phase(move_number),
                 }
             )
 

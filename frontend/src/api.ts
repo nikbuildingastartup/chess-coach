@@ -59,10 +59,47 @@ export interface AnalysisEntry {
   best_move: string | null;
 }
 
+export interface Coaching {
+  headline: string | null;
+  explanation: string | null;
+  recommendation: string | null;
+}
+
 export interface SavedGame {
   game_id: number;
   analysis: AnalysisEntry[];
-  coaching_summary: string | null;
+  coaching: Coaching | null;
+}
+
+export interface GameAnalysis {
+  analysis: AnalysisEntry[];
+  coaching: Coaching | null;
+}
+
+export type FocusStatus = "computing" | "ready" | "insufficient_data" | "error";
+
+export interface PracticePosition {
+  fen: string;
+  played_move: string;
+  best_move: string | null;
+  classification: string;
+}
+
+export interface DailyFocus {
+  id: number;
+  date: string;
+  status: FocusStatus;
+  headline: string | null;
+  explanation: string | null;
+  recommendation: string | null;
+  created_at: string;
+  practice_positions: PracticePosition[];
+}
+
+export interface CheckMoveResult {
+  correct: boolean;
+  best_move: string | null;
+  played_eval_cp: number;
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -128,5 +165,19 @@ export function savePlayedGame(
   return request<SavedGame>("/play/games", {
     method: "POST",
     body: JSON.stringify({ pgn, result }),
+  });
+}
+
+export function getDailyFocus(): Promise<DailyFocus> {
+  return request<DailyFocus>("/focus/today", { method: "GET" });
+}
+
+export function checkPracticeMove(
+  fen: string,
+  moveUci: string
+): Promise<CheckMoveResult> {
+  return request<CheckMoveResult>("/practice/check-move", {
+    method: "POST",
+    body: JSON.stringify({ fen, move_uci: moveUci }),
   });
 }

@@ -12,7 +12,7 @@ from app.chesscom_client import (
     get_games_for_month,
 )
 from app.db import get_session
-from app.models import Game
+from app.models import AppSettings, Game
 
 router = APIRouter(prefix="/games", tags=["games"], dependencies=[Depends(require_auth)])
 
@@ -61,6 +61,22 @@ def _derive_result(raw_game: dict, username: str) -> str:
     return "unknown"
 
 
+def _derive_user_color(raw_game: dict, username: str) -> str | None:
+    """Which side (`"white"`/`"black"`) the synced username played.
+
+    Same White/Black-username matching as `_derive_result`, just returning
+    the side label instead of that side's result. `None` if neither side's
+    username matches (shouldn't normally happen for games returned by the
+    Chess.com API for this username, but the caller doesn't crash on it).
+    """
+    username_lower = username.lower()
+    for side in ("white", "black"):
+        player = raw_game.get(side) or {}
+        if str(player.get("username", "")).lower() == username_lower:
+            return side
+    return None
+
+
 @router.post("/sync", response_model=SyncResponse)
 async def sync_games(body: SyncRequest, session: Session = Depends(get_session)) -> SyncResponse:
     try:
@@ -74,6 +90,9 @@ async def sync_games(body: SyncRequest, session: Session = Depends(get_session))
                     select(Game).where(Game.chesscom_game_id == chesscom_game_id)
                 ).first()
                 if existing is not None:
+                    if existing.user_color is None:
+                        existing.user_color = _derive_user_color(raw_game, body.username)
+                        session.add(existing)
                     continue
                 session.add(
                     Game(
@@ -83,12 +102,21 @@ async def sync_games(body: SyncRequest, session: Session = Depends(get_session))
                         time_class=raw_game["time_class"],
                         result=_derive_result(raw_game, body.username),
                         source="chesscom",
+                        user_color=_derive_user_color(raw_game, body.username),
                     )
                 )
                 imported += 1
             # Commit after each archive month so a later failure doesn't
             # discard games already fetched from earlier months.
             session.commit()
+
+        app_settings = session.get(AppSettings, 1)
+        if app_settings is None:
+            app_settings = AppSettings(id=1, chesscom_username=body.username)
+        else:
+            app_settings.chesscom_username = body.username
+        session.add(app_settings)
+        session.commit()
     except ChessComUserNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

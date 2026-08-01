@@ -96,6 +96,11 @@ def _migrate_game_table(conn: Connection) -> None:
     if "coaching_summary" not in columns:
         conn.exec_driver_sql("ALTER TABLE game ADD COLUMN coaching_summary VARCHAR")
 
+    if "user_color" not in columns:
+        conn.exec_driver_sql("ALTER TABLE game ADD COLUMN user_color VARCHAR")
+
+    _backfill_played_games_predating_user_color(conn)
+
     # Re-check chesscom_game_id's nullability after any ADD COLUMNs above
     # (those don't affect it, but re-reading keeps this self-contained).
     columns = {
@@ -104,6 +109,36 @@ def _migrate_game_table(conn: Connection) -> None:
     chesscom_col = columns.get("chesscom_game_id")
     if chesscom_col is not None and chesscom_col[3] == 1:  # notnull flag == 1
         _rebuild_game_table_with_nullable_chesscom_id(conn)
+
+
+def _backfill_played_games_predating_user_color(conn: Connection) -> None:
+    """Fix up `source="played"` rows created before `user_color` existed.
+
+    The Play Module's invariant is that the human always plays White (see
+    `USER_SIDE` in `app/coaching.py`), so any `source="played"` row with a
+    NULL `user_color` can be safely backfilled to `"white"` -- unlike
+    Chess.com imports, where the user's side genuinely isn't knowable
+    without re-deriving it at sync time.
+
+    Those same pre-existing rows were also analyzed before `analyze_game`
+    started tagging each move with a `"phase"` field, so their
+    `analysis_json` predates that field and would silently under-count in
+    `aggregate_weakness_data` (which groups by `(phase, classification)`).
+    Rather than patching old JSON blobs to fake a `phase` value, reset
+    `analyzed`/`analysis_json` so `backfill_recent_games` picks these rows
+    up again and re-analyzes them for real with the current analyzer.
+
+    Idempotent by construction: the `WHERE user_color IS NULL` clause means
+    a row only matches once -- after this runs, its `user_color` is
+    `'white'`, so a subsequent call no longer selects it. Safe on a
+    from-scratch DB with no `game` rows at all, and never touches
+    `source="chesscom"` rows.
+    """
+    conn.exec_driver_sql(
+        "UPDATE game "
+        "SET user_color = 'white', analyzed = 0, analysis_json = NULL "
+        "WHERE source = 'played' AND user_color IS NULL"
+    )
 
 
 def _rebuild_game_table_with_nullable_chesscom_id(conn: Connection) -> None:
@@ -138,11 +173,11 @@ def _rebuild_game_table_with_nullable_chesscom_id(conn: Connection) -> None:
         """
         INSERT INTO game (
             id, chesscom_game_id, pgn, end_time, time_class, result,
-            source, analysis_json, analyzed, coaching_summary
+            source, analysis_json, analyzed, coaching_summary, user_color
         )
         SELECT
             id, chesscom_game_id, pgn, end_time, time_class, result,
-            source, analysis_json, analyzed, coaching_summary
+            source, analysis_json, analyzed, coaching_summary, user_color
         FROM game_old
         """
     )

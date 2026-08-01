@@ -1,4 +1,4 @@
-import type { AnalysisEntry } from "./api";
+import type { AnalysisEntry, Coaching } from "./api";
 
 const CLASSIFICATION_LABEL: Record<AnalysisEntry["classification"], string> = {
   blunder: "Blunder",
@@ -7,21 +7,35 @@ const CLASSIFICATION_LABEL: Record<AnalysisEntry["classification"], string> = {
   good: "Good",
 };
 
+function CoachingCard({ coaching }: { coaching: Coaching | null }) {
+  if (!coaching) return null;
+  const { headline, explanation, recommendation } = coaching;
+  if (!headline && !explanation && !recommendation) return null;
+
+  return (
+    <div className="card coaching-card">
+      {headline && <h3 className="coaching-headline">{headline}</h3>}
+      {explanation && <p className="coaching-explanation">{explanation}</p>}
+      {recommendation && (
+        <p className="coaching-recommendation">{recommendation}</p>
+      )}
+    </div>
+  );
+}
+
 function GameTips({
   analysis,
-  coachingSummary,
+  coaching,
   onPlayAgain,
 }: {
   analysis: AnalysisEntry[];
-  coachingSummary: string | null;
+  coaching: Coaching | null;
   onPlayAgain: () => void;
 }) {
   return (
     <div className="game-tips">
       <h2>Game tips</h2>
-      {coachingSummary && (
-        <p className="card coaching-summary">{coachingSummary}</p>
-      )}
+      <CoachingCard coaching={coaching} />
       {analysis.length === 0 ? (
         <p className="muted">No notable moves — nothing to review.</p>
       ) : (
