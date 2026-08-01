@@ -197,8 +197,7 @@ def test_create_db_and_tables_creates_app_settings_and_daily_focus_from_scratch(
     `SQLModel.metadata.create_all()` alone is expected to create them (no
     hand-written ALTER-TABLE/CREATE-TABLE code needed, unlike the existing
     `game` table) -- this pins down that expectation against a real
-    on-disk SQLite file, both from scratch and against the pre-branch
-    fixture (which doesn't have them at all)."""
+    on-disk SQLite file, from scratch."""
     from sqlmodel import SQLModel
 
     db_path = tmp_path / "fresh_new_tables.db"
@@ -234,6 +233,55 @@ def test_create_db_and_tables_creates_app_settings_and_daily_focus_from_scratch(
             "practice_positions_json",
             "created_at",
         }
+
+
+def test_create_db_and_tables_migrates_a_real_pre_branch_sqlite_file(tmp_path, monkeypatch):
+    """End-to-end coverage of the actual startup entry point,
+    `create_db_and_tables()`, against a database shaped like a real,
+    pre-branch production `chess_coach.db` (see `_make_pre_branch_db`):
+    a `game` table only, missing `user_color` and entirely missing the
+    `AppSettings`/`DailyFocus` tables this branch adds.
+
+    `create_db_and_tables()` combines `SQLModel.metadata.create_all()`
+    (which creates the new tables but cannot alter the existing `game`
+    table) with `_migrate_game_table()` (which ALTERs `game` by hand) --
+    this test exercises that combination for real, against a fixture
+    file, rather than testing either half in isolation.
+    """
+    import app.db as db_module
+
+    db_path = tmp_path / "pre_branch_chess_coach.db"
+    _make_pre_branch_db(str(db_path))
+
+    real_engine = create_engine(f"sqlite:///{db_path}")
+    monkeypatch.setattr(db_module, "engine", real_engine)
+
+    db_module.create_db_and_tables()
+
+    with real_engine.begin() as conn:
+        # The existing `game` table was migrated in place: the new
+        # `user_color` column (this task's third schema change) is present.
+        game_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(game)").fetchall()}
+        assert "user_color" in game_cols
+        assert "source" in game_cols
+        assert "analysis_json" in game_cols
+
+        # The pre-existing row survived the migration.
+        chesscom_game_id = conn.execute(
+            text("SELECT chesscom_game_id FROM game WHERE id = 1")
+        ).scalar()
+        assert chesscom_game_id == "https://www.chess.com/game/live/12345"
+
+        # The brand-new tables this branch adds now exist, even though the
+        # pre-branch fixture never had them.
+        table_names = {
+            row[0]
+            for row in conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "appsettings" in table_names
+        assert "dailyfocus" in table_names
 
 
 def test_migration_no_op_when_table_does_not_exist(tmp_path):
