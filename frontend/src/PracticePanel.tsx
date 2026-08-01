@@ -124,6 +124,8 @@ function PracticeBoard({
               ? err.message
               : "Failed to check that move."
           );
+          chessRef.current = new Chess(startFen);
+          setFen(chessRef.current.fen());
           setFeedback({ state: "idle" });
         }
       })();
