@@ -27,6 +27,16 @@ BEFORE_BLUNDER_FEN = _fen_after(["e4", "Nf6", "Qf3", "Nc6"])
 # a "close enough" move, not a genuine mistake.
 BEFORE_RECAPTURE_FEN = _fen_after(["e4", "Nf6", "Qf3", "Nc6", "Qxf6"])
 
+# A bare-bones position with a hanging, undefended black rook on d6 that two
+# different white rooks can each capture -- one along the d-file (d1d6), one
+# along the 6th rank (a6d6). With almost no material left on the board this
+# is a trivially winning king+rook endgame either way, so the two captures'
+# evaluations are essentially identical (a hair apart, not exactly equal) --
+# a much smaller and more stable gap than the queen-recapture position
+# above, useful for testing the *tolerance* path without brushing up against
+# it.
+TWO_ROOKS_CAN_CAPTURE_FEN = "4k3/8/R2r4/8/8/8/8/3RK3 w - - 0 1"
+
 
 @pytest.fixture()
 def client():
@@ -103,28 +113,29 @@ def test_check_move_exact_match_is_correct(client):
 
 
 def test_check_move_close_but_not_exact_is_correct_via_tolerance(client):
-    # Both gxf6 and exf6 recapture the hanging queen for free and should be
-    # similarly strong. Discover which one Stockfish names as best, then
-    # play the *other* recapture -- it shouldn't match exactly, but should
-    # still be marked correct because the eval drop is small.
+    # Either rook capture (d1d6 or a6d6) wins the hanging black rook and
+    # leaves a trivially winning king+rook endgame. Discover which one
+    # Stockfish names as best, then play the *other* capture -- it shouldn't
+    # match exactly, but should still be marked correct because the eval
+    # drop between the two is tiny.
     discovery = client.post(
         "/practice/check-move",
-        json={"fen": BEFORE_RECAPTURE_FEN, "move_uci": "g7f6"},
+        json={"fen": TWO_ROOKS_CAN_CAPTURE_FEN, "move_uci": "d1d6"},
         headers=AUTH_HEADERS,
     )
     assert discovery.status_code == 200
     best_move = discovery.json()["best_move"]
 
-    other_recapture = "e7f6" if best_move == "g7f6" else "g7f6"
+    other_capture = "a6d6" if best_move == "d1d6" else "d1d6"
 
     response = client.post(
         "/practice/check-move",
-        json={"fen": BEFORE_RECAPTURE_FEN, "move_uci": other_recapture},
+        json={"fen": TWO_ROOKS_CAN_CAPTURE_FEN, "move_uci": other_capture},
         headers=AUTH_HEADERS,
     )
 
     assert response.status_code == 200
     body = response.json()
     assert body["best_move"] == best_move
-    assert other_recapture != best_move
+    assert other_capture != best_move
     assert body["correct"] is True

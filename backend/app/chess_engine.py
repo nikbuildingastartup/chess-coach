@@ -37,7 +37,7 @@ INACCURACY_THRESHOLD_CP = 50
 # Centipawn-drop tolerance (mover's perspective) below which a Practice
 # Module move is still accepted as "correct" even if it doesn't exactly
 # match Stockfish's top choice -- multiple moves are often equally sound.
-PRACTICE_CORRECT_TOLERANCE_CP = 50
+PRACTICE_CORRECT_TOLERANCE_CP = 30
 
 # Fullmove-number thresholds for coarse game-phase tagging. A move with
 # `move_number <= OPENING_MOVE_LIMIT` is "opening"; up through
