@@ -34,6 +34,7 @@ function UsagePill() {
         type="button"
         className="usage-pill"
         onClick={() => setOpen((prev) => !prev)}
+        disabled={!summary}
       >
         {summary ? formatCost(summary.total_cost_usd) : "$—"}
       </button>
