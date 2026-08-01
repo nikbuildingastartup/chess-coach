@@ -40,3 +40,5 @@ class DailyFocus(SQLModel, table=True):
     source_game_ids_json: str | None = None
     practice_positions_json: str | None = None
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True)))
+    progress_current: int = 0
+    progress_total: int = 0

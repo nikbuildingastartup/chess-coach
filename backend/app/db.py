@@ -184,6 +184,42 @@ def _rebuild_game_table_with_nullable_chesscom_id(conn: Connection) -> None:
     conn.exec_driver_sql("DROP TABLE game_old")
 
 
+def _migrate_dailyfocus_table(conn: Connection) -> None:
+    """Idempotently bring an existing `dailyfocus` table up to this branch's schema.
+
+    `DailyFocus` is a table that (unlike `game`) was itself introduced by a
+    previous branch via `SQLModel.metadata.create_all()` -- but `create_all`
+    only issues `CREATE TABLE IF NOT EXISTS`, so it never adds columns to a
+    `dailyfocus` table that already exists from an earlier startup. This
+    branch adds `progress_current`/`progress_total`; against an
+    already-migrated dev/prod DB that already has a `dailyfocus` table
+    without those columns, they need to be added by hand, same pattern as
+    `_migrate_game_table`.
+
+    Safe to call on every startup, including against a brand-new database
+    that `create_all` just created with the current schema (both ALTERs
+    below are no-ops in that case) or one with no `dailyfocus` table at all.
+    """
+    rows = conn.exec_driver_sql("PRAGMA table_info(dailyfocus)").fetchall()
+    if not rows:
+        # No `dailyfocus` table at all -- either create_all hasn't run yet,
+        # or this is a fresh DB about to get the current schema (which
+        # already includes these columns). Nothing to migrate either way.
+        return
+
+    columns = {row[1] for row in rows}
+
+    if "progress_current" not in columns:
+        conn.exec_driver_sql(
+            "ALTER TABLE dailyfocus ADD COLUMN progress_current INTEGER NOT NULL DEFAULT 0"
+        )
+
+    if "progress_total" not in columns:
+        conn.exec_driver_sql(
+            "ALTER TABLE dailyfocus ADD COLUMN progress_total INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 def create_db_and_tables() -> None:
     if engine.dialect.name == "sqlite":
         with engine.begin() as conn:
@@ -193,6 +229,7 @@ def create_db_and_tables() -> None:
     if engine.dialect.name == "sqlite":
         with engine.begin() as conn:
             _migrate_game_table(conn)
+            _migrate_dailyfocus_table(conn)
 
 
 def get_session() -> Generator[Session, None, None]:

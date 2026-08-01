@@ -349,6 +349,100 @@ def test_focus_today_does_not_retry_when_existing_status_is_ready_or_computing(
     mock_compute.assert_not_called()
 
 
+def test_focus_today_progress_updates_incrementally_during_backfill(db_client, db_engine):
+    """`_compute_daily_focus` wires `backfill_recent_games`'s `on_progress`
+    callback to update `DailyFocus.progress_current`/`progress_total` on
+    the row and commit, so the row is visible mid-computation to a
+    concurrent poller (not just at the very end).
+
+    `TestClient` runs `BackgroundTasks` synchronously as part of the same
+    request, so there's no real opportunity to poll mid-flight from outside
+    -- instead, this patches `app.routers.focus.backfill_recent_games` with
+    a fake that invokes `on_progress` at several points and, from a
+    *separate* session against the same test engine (simulating a
+    concurrent `GET /focus/today` poll), asserts the `DailyFocus` row
+    already reflects each intermediate progress value before the fake
+    returns."""
+    with Session(db_engine) as session:
+        for i in range(3):
+            _seed_analyzed_game(
+                session, game_id_suffix=str(i), end_time=BASE_TIME + timedelta(days=i)
+            )
+
+    observed: list[tuple[int, int]] = []
+
+    def fake_backfill(session, on_progress=None, **kwargs):
+        assert on_progress is not None
+        for current, total in [(0, 3), (1, 3), (2, 3), (3, 3)]:
+            on_progress(current, total)
+            with Session(db_engine) as poller_session:
+                polled = poller_session.exec(select(DailyFocus)).one()
+                observed.append((polled.progress_current, polled.progress_total))
+        return []
+
+    with patch("app.routers.focus.backfill_recent_games", side_effect=fake_backfill):
+        response = db_client.get("/focus/today", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    # Each on_progress call was already committed and visible to a
+    # concurrent poller by the time the next call happened.
+    assert observed == [(0, 3), (1, 3), (2, 3), (3, 3)]
+
+
+def test_focus_today_resets_progress_on_insufficient_data_retry(db_client, db_engine):
+    """A stale row from a previous computation (progress left at, say,
+    2/2 from an earlier run) must not show leftover progress from that
+    earlier run once a fresh computation is dispatched -- the retry path
+    must reset both fields to 0 before recomputing starts."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    with Session(db_engine) as session:
+        session.add(
+            DailyFocus(
+                date=today,
+                status="insufficient_data",
+                progress_current=2,
+                progress_total=2,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+    response = db_client.get("/focus/today", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "computing"
+    assert body["progress_current"] == 0
+    assert body["progress_total"] == 0
+
+
+def test_focus_today_response_includes_progress_fields_when_ready(db_client, db_engine):
+    with Session(db_engine) as session:
+        for i in range(3):
+            _seed_analyzed_game(
+                session, game_id_suffix=str(i), end_time=BASE_TIME + timedelta(days=i)
+            )
+
+    with patch(
+        "app.routers.focus.generate_daily_focus",
+        return_value={
+            "headline": "Opening blunders",
+            "explanation": "You keep hanging pieces early.",
+            "recommendation": "Slow down in the opening.",
+        },
+    ):
+        db_client.get("/focus/today", headers=AUTH_HEADERS)
+        second_response = db_client.get("/focus/today", headers=AUTH_HEADERS)
+
+    body = second_response.json()
+    assert body["status"] == "ready"
+    # All 3 seeded games are pre-analyzed, so backfill_recent_games has no
+    # unanalyzed candidates -- progress reflects the (0, 0) zero-candidates
+    # call.
+    assert body["progress_current"] == 0
+    assert body["progress_total"] == 0
+
+
 def test_focus_today_handles_concurrent_insert_race_without_500(db_client, db_engine):
     """Regression test for the non-atomic check-then-insert race in `GET
     /focus/today`.
