@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, useEffect } from "react";
 import { Chess } from "chess.js";
 import { Chessboard, type PieceDropHandlerArgs } from "react-chessboard";
 import {
@@ -12,10 +12,88 @@ import {
 import GameTips from "./GameTips";
 
 const STRENGTH_OPTIONS: { value: Skill; label: string }[] = [
-  { value: "easy", label: "Easy" },
-  { value: "medium", label: "Medium" },
-  { value: "hard", label: "Hard" },
+  { value: "easy", label: "Easy · ~1300 Elo" },
+  { value: "medium", label: "Medium · ~1900 Elo" },
+  { value: "hard", label: "Hard · ~2500 Elo" },
 ];
+
+// Unicode chess piece symbols for rendering captured pieces
+const PIECE_SYMBOLS: Record<string, string> = {
+  P: "♟",
+  N: "♞",
+  B: "♝",
+  R: "♜",
+  Q: "♛",
+  K: "♚",
+  p: "♙",
+  n: "♘",
+  b: "♗",
+  r: "♖",
+  q: "♕",
+  k: "♔",
+};
+
+// Standard chess piece values for material calculation
+const PIECE_VALUES: Record<string, number> = {
+  p: 1,
+  n: 3,
+  b: 3,
+  r: 5,
+  q: 9,
+  k: 0,
+};
+
+interface CapturedPiece {
+  piece: string;
+  color: "white" | "black";
+}
+
+// Helper function to calculate material advantage from board state
+function calculateMaterialAdvantage(chess: Chess): string {
+  const board = chess.board();
+  let whiteValue = 0;
+  let blackValue = 0;
+
+  for (const row of board) {
+    for (const square of row) {
+      if (square) {
+        const value = PIECE_VALUES[square.type] || 0;
+        if (square.color === "w") {
+          whiteValue += value;
+        } else {
+          blackValue += value;
+        }
+      }
+    }
+  }
+
+  const difference = whiteValue - blackValue;
+  if (difference === 0) {
+    return "Even";
+  }
+  const side = difference > 0 ? "White" : "Black";
+  const amount = Math.abs(difference);
+  return `${side} +${amount}`;
+}
+
+// Helper function to get captured pieces from game history
+function getCapturedPieces(chess: Chess): { white: CapturedPiece[]; black: CapturedPiece[] } {
+  const history = chess.history({ verbose: true });
+  const whiteCaptured: CapturedPiece[] = [];
+  const blackCaptured: CapturedPiece[] = [];
+
+  for (const move of history) {
+    if (move.captured) {
+      if (move.color === "w") {
+        blackCaptured.push({ piece: move.captured, color: "black" });
+      } else {
+        whiteCaptured.push({ piece: move.captured, color: "white" });
+      }
+    }
+  }
+
+  return { white: whiteCaptured, black: blackCaptured };
+}
 
 type GameStatus =
   | { state: "playing" }
@@ -51,12 +129,20 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
   // Held in a ref so async callbacks always mutate/read the same live
   // instance, while `fen` in state drives re-renders of the board.
   const chessRef = useRef(new Chess());
+  const moveListRef = useRef<HTMLDivElement>(null);
   const [fen, setFen] = useState(chessRef.current.fen());
   const [skill, setSkill] = useState<Skill>("medium");
   const [status, setStatus] = useState<GameStatus>({ state: "playing" });
   const [error, setError] = useState<string | null>(null);
   const [savedGame, setSavedGame] = useState<SavedGame | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Auto-scroll move list to the bottom when new moves are added
+  useEffect(() => {
+    if (moveListRef.current) {
+      moveListRef.current.scrollTop = moveListRef.current.scrollHeight;
+    }
+  }, [fen]);
 
   const finishGame = useCallback(
     async (result: PlayResult, reason: string) => {
@@ -165,6 +251,56 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
   const isOver = status.state === "over";
   const canResign = status.state === "playing";
 
+  // Render move list
+  const renderMoveList = () => {
+    const moves = chessRef.current.history();
+    const rows = [];
+
+    for (let i = 0; i < moves.length; i += 2) {
+      const moveNumber = Math.floor(i / 2) + 1;
+      const whiteMove = moves[i];
+      const blackMove = moves[i + 1];
+
+      rows.push(
+        <div key={moveNumber} className="move-list-row">
+          <span className="move-number">{moveNumber}</span>
+          <span className="move">{whiteMove}</span>
+          {blackMove && <span className="move">{blackMove}</span>}
+        </div>
+      );
+    }
+
+    return rows;
+  };
+
+  // Render captured pieces
+  const renderCapturedPieces = () => {
+    const captured = getCapturedPieces(chessRef.current);
+
+    return (
+      <div className="captured-pieces">
+        {captured.black.length > 0 && (
+          <div className="captured-pieces-row">
+            {captured.black.map((p, i) => (
+              <span key={i} className="captured-piece">
+                {PIECE_SYMBOLS[p.piece.toUpperCase()] || p.piece}
+              </span>
+            ))}
+          </div>
+        )}
+        {captured.white.length > 0 && (
+          <div className="captured-pieces-row">
+            {captured.white.map((p, i) => (
+              <span key={i} className="captured-piece">
+                {PIECE_SYMBOLS[p.piece.toLowerCase()] || p.piece}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="play-panel">
       <div className="strength-selector">
@@ -202,46 +338,62 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
         </>
       ) : (
         <>
-          <div className="board-container">
-            <Chessboard
-              options={{
-                position: fen,
-                onPieceDrop,
-                id: "play-vs-engine-board",
-                allowDragging: status.state === "playing",
-              }}
-            />
-          </div>
+          <div className="play-game-container">
+            <div className="board-section">
+              <div className="board-container">
+                <Chessboard
+                  options={{
+                    position: fen,
+                    onPieceDrop,
+                    id: "play-vs-engine-board",
+                    allowDragging: status.state === "playing",
+                  }}
+                />
+              </div>
 
-          <div className={`status-bar${isOver ? " status-done" : ""}`}>
-            <span className="status-dot" />
-            <span className="status-text">
-              {status.state === "thinking"
-                ? "Engine is thinking..."
-                : status.state === "over"
-                  ? saving
-                    ? "Analyzing your game..."
-                    : status.reason
-                  : "Your move."}
-            </span>
-          </div>
+              <div className={`status-bar${isOver ? " status-done" : ""}`}>
+                <span className="status-dot" />
+                <span className="status-text">
+                  {status.state === "thinking"
+                    ? "Engine is thinking..."
+                    : status.state === "over"
+                      ? saving
+                        ? "Analyzing your game..."
+                        : status.reason
+                      : "Your move."}
+                </span>
+              </div>
 
-          {error && <p className="sync-error">{error}</p>}
+              {error && <p className="sync-error">{error}</p>}
 
-          <div className="play-controls">
-            <button
-              type="button"
-              className="resign-button"
-              onClick={handleResign}
-              disabled={!canResign}
-            >
-              Resign
-            </button>
-            {isOver && (
-              <button type="button" onClick={handleNewGame}>
-                New game
-              </button>
-            )}
+              <div className="play-controls">
+                <button
+                  type="button"
+                  className="resign-button"
+                  onClick={handleResign}
+                  disabled={!canResign}
+                >
+                  Resign
+                </button>
+                {isOver && (
+                  <button type="button" onClick={handleNewGame}>
+                    New game
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="play-sidebar">
+              <div className="material-badge">
+                {calculateMaterialAdvantage(chessRef.current)}
+              </div>
+
+              {renderCapturedPieces()}
+
+              <div className="move-list" ref={moveListRef}>
+                {renderMoveList()}
+              </div>
+            </div>
           </div>
         </>
       )}
