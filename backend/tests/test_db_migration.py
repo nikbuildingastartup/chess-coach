@@ -122,6 +122,7 @@ def test_migration_upgrades_a_real_pre_branch_sqlite_file(tmp_path):
         assert "source" in cols
         assert "analysis_json" in cols
         assert "coaching_summary" in cols
+        assert "user_color" in cols
 
         # chesscom_game_id is no longer NOT NULL.
         assert cols["chesscom_game_id"][3] == 0  # notnull flag
@@ -140,15 +141,22 @@ def test_migration_upgrades_a_real_pre_branch_sqlite_file(tmp_path):
         assert row.pgn == "1. e4 e5"
         assert row.result == "win"
 
+        # The pre-existing row has no way to know which side the user
+        # played -- user_color must be backfilled as NULL, not guessed.
+        user_color = conn.execute(
+            text("SELECT user_color FROM game WHERE id = 1")
+        ).scalar()
+        assert user_color is None
+
         # A played game (NULL chesscom_game_id) can now be inserted, which
         # would have violated the old NOT NULL constraint.
         conn.execute(
             text(
                 "INSERT INTO game "
                 "(chesscom_game_id, pgn, end_time, time_class, result, source, analysis_json, "
-                "analyzed, coaching_summary) "
+                "analyzed, coaching_summary, user_color) "
                 "VALUES (NULL, '1. e4', '2024-01-02 00:00:00+00:00', 'untimed', 'loss', 'played', "
-                "'[]', 1, 'Nice game overall.')"
+                "'[]', 1, 'Nice game overall.', 'white')"
             )
         )
 
@@ -179,6 +187,52 @@ def test_migration_is_a_no_op_against_a_fresh_current_schema_db(tmp_path):
             "analysis_json",
             "analyzed",
             "coaching_summary",
+            "user_color",
+        }
+
+
+def test_create_db_and_tables_creates_app_settings_and_daily_focus_from_scratch(tmp_path):
+    """`AppSettings` and `DailyFocus` are brand-new tables this branch adds.
+    Per the migration approach documented in `_migrate_game_table`,
+    `SQLModel.metadata.create_all()` alone is expected to create them (no
+    hand-written ALTER-TABLE/CREATE-TABLE code needed, unlike the existing
+    `game` table) -- this pins down that expectation against a real
+    on-disk SQLite file, both from scratch and against the pre-branch
+    fixture (which doesn't have them at all)."""
+    from sqlmodel import SQLModel
+
+    db_path = tmp_path / "fresh_new_tables.db"
+    fresh_engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(fresh_engine)
+
+    with fresh_engine.begin() as conn:
+        table_names = {
+            row[0]
+            for row in conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "appsettings" in table_names
+        assert "dailyfocus" in table_names
+
+        settings_cols = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(appsettings)").fetchall()
+        }
+        assert settings_cols == {"id", "chesscom_username"}
+
+        focus_cols = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(dailyfocus)").fetchall()
+        }
+        assert focus_cols == {
+            "id",
+            "date",
+            "status",
+            "headline",
+            "explanation",
+            "recommendation",
+            "source_game_ids_json",
+            "practice_positions_json",
+            "created_at",
         }
 
 

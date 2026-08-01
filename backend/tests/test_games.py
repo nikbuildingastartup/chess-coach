@@ -10,7 +10,7 @@ from app.chesscom_client import ChessComUnavailableError, ChessComUserNotFoundEr
 from app.config import settings
 from app.db import get_session
 from app.main import app
-from app.models import Game
+from app.models import AppSettings, Game
 
 AUTH_HEADERS = {"Authorization": f"Bearer {settings.app_secret}"}
 
@@ -155,6 +155,165 @@ def test_end_time_round_trips_as_utc(mock_archives, mock_games, client):
 
     expected = datetime.fromtimestamp(RAW_GAMES[0]["end_time"], tz=timezone.utc)
     assert returned_end_time.astimezone(timezone.utc) == expected
+
+
+@patch("app.routers.games.get_games_for_month", new_callable=AsyncMock)
+@patch("app.routers.games.get_archive_urls", new_callable=AsyncMock)
+def test_sync_sets_user_color_on_newly_imported_games(mock_archives, mock_games):
+    """Game 1 has `tester` as White, game 2 has `tester` as Black -- newly
+    inserted rows must be tagged with the matching side."""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    mock_archives.return_value = ["https://api.chess.com/pub/player/tester/games/2024/01"]
+    mock_games.return_value = RAW_GAMES
+
+    def get_session_override():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = get_session_override
+    try:
+        with TestClient(app) as c:
+            c.post("/games/sync", json={"username": "tester"}, headers=AUTH_HEADERS)
+    finally:
+        app.dependency_overrides.clear()
+
+    with Session(engine) as session:
+        games = {g.chesscom_game_id: g for g in session.exec(select(Game)).all()}
+        assert games["https://www.chess.com/game/live/1"].user_color == "white"
+        assert games["https://www.chess.com/game/live/2"].user_color == "black"
+
+
+@patch("app.routers.games.get_games_for_month", new_callable=AsyncMock)
+@patch("app.routers.games.get_archive_urls", new_callable=AsyncMock)
+def test_sync_backfills_user_color_on_already_imported_games(mock_archives, mock_games):
+    """A game imported before `user_color` existed (or by older code) has
+    `user_color=None`. Re-syncing must backfill it in place rather than
+    skipping it outright, without touching any other field."""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(
+            Game(
+                chesscom_game_id="https://www.chess.com/game/live/1",
+                pgn="1. e4 e5",
+                end_time=datetime.fromtimestamp(1700000000, tz=timezone.utc),
+                time_class="blitz",
+                result="win",
+                source="chesscom",
+                user_color=None,
+            )
+        )
+        session.commit()
+
+    mock_archives.return_value = ["https://api.chess.com/pub/player/tester/games/2024/01"]
+    mock_games.return_value = [RAW_GAMES[0]]
+
+    def get_session_override():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = get_session_override
+    try:
+        with TestClient(app) as c:
+            response = c.post(
+                "/games/sync", json={"username": "tester"}, headers=AUTH_HEADERS
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    # The pre-existing game was skipped (not re-imported)...
+    assert response.json() == {"imported": 0, "total": 1}
+
+    with Session(engine) as session:
+        game = session.exec(select(Game)).one()
+        # ...but its user_color got backfilled.
+        assert game.user_color == "white"
+        assert game.pgn == "1. e4 e5"
+
+
+@patch("app.routers.games.get_games_for_month", new_callable=AsyncMock)
+@patch("app.routers.games.get_archive_urls", new_callable=AsyncMock)
+def test_sync_does_not_overwrite_an_already_set_user_color(mock_archives, mock_games):
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(
+            Game(
+                chesscom_game_id="https://www.chess.com/game/live/1",
+                pgn="1. e4 e5",
+                end_time=datetime.fromtimestamp(1700000000, tz=timezone.utc),
+                time_class="blitz",
+                result="win",
+                source="chesscom",
+                user_color="black",  # deliberately "wrong" to prove it's untouched
+            )
+        )
+        session.commit()
+
+    mock_archives.return_value = ["https://api.chess.com/pub/player/tester/games/2024/01"]
+    mock_games.return_value = [RAW_GAMES[0]]
+
+    def get_session_override():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = get_session_override
+    try:
+        with TestClient(app) as c:
+            c.post("/games/sync", json={"username": "tester"}, headers=AUTH_HEADERS)
+    finally:
+        app.dependency_overrides.clear()
+
+    with Session(engine) as session:
+        game = session.exec(select(Game)).one()
+        assert game.user_color == "black"
+
+
+@patch("app.routers.games.get_games_for_month", new_callable=AsyncMock)
+@patch("app.routers.games.get_archive_urls", new_callable=AsyncMock)
+def test_sync_app_settings_upsert_persists_and_updates(mock_archives, mock_games):
+    """AppSettings is a singleton (id=1): first sync creates it, a later
+    sync with a different username updates the same row rather than
+    inserting a second one."""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    mock_archives.return_value = ["https://api.chess.com/pub/player/tester/games/2024/01"]
+    mock_games.return_value = RAW_GAMES
+
+    def get_session_override():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = get_session_override
+    try:
+        with TestClient(app) as c:
+            c.post("/games/sync", json={"username": "tester"}, headers=AUTH_HEADERS)
+            c.post("/games/sync", json={"username": "someone_else"}, headers=AUTH_HEADERS)
+    finally:
+        app.dependency_overrides.clear()
+
+    with Session(engine) as session:
+        all_settings = session.exec(select(AppSettings)).all()
+        assert len(all_settings) == 1
+        assert all_settings[0].id == 1
+        assert all_settings[0].chesscom_username == "someone_else"
 
 
 def test_get_games_without_auth_returns_401(client):

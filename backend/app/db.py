@@ -96,6 +96,9 @@ def _migrate_game_table(conn: Connection) -> None:
     if "coaching_summary" not in columns:
         conn.exec_driver_sql("ALTER TABLE game ADD COLUMN coaching_summary VARCHAR")
 
+    if "user_color" not in columns:
+        conn.exec_driver_sql("ALTER TABLE game ADD COLUMN user_color VARCHAR")
+
     # Re-check chesscom_game_id's nullability after any ADD COLUMNs above
     # (those don't affect it, but re-reading keeps this self-contained).
     columns = {
@@ -138,11 +141,11 @@ def _rebuild_game_table_with_nullable_chesscom_id(conn: Connection) -> None:
         """
         INSERT INTO game (
             id, chesscom_game_id, pgn, end_time, time_class, result,
-            source, analysis_json, analyzed, coaching_summary
+            source, analysis_json, analyzed, coaching_summary, user_color
         )
         SELECT
             id, chesscom_game_id, pgn, end_time, time_class, result,
-            source, analysis_json, analyzed, coaching_summary
+            source, analysis_json, analyzed, coaching_summary, user_color
         FROM game_old
         """
     )

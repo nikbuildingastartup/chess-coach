@@ -67,6 +67,7 @@ def save_played_game(
         analysis_json=json.dumps(analysis),
         analyzed=True,
         coaching_summary=None,
+        user_color="white",
     )
     session.add(game)
     session.commit()
