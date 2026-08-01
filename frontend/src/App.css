@@ -54,9 +54,15 @@
 }
 
 .board-container {
+  width: 100%;
   max-width: 480px;
   margin: 0 auto;
-  width: 100%;
+}
+
+/* Play tab: override to allow board expansion in two-column layout */
+.board-section .board-container {
+  max-width: min(100%, 640px);
+  margin: 0;
 }
 
 .play-controls {
@@ -388,4 +394,116 @@ button {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+/* Two-column layout for play game: board on left, sidebar on right */
+.play-game-container {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: 24px;
+  align-items: start;
+}
+
+.board-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.play-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  max-height: 600px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.material-badge {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-h);
+  text-align: center;
+  padding: 8px;
+  background: var(--border);
+  border-radius: 6px;
+}
+
+.captured-pieces {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.captured-pieces-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 24px;
+}
+
+.captured-piece {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.move-list {
+  flex: 1;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  font-size: 12px;
+}
+
+.move-list-row {
+  display: grid;
+  grid-template-columns: 40px 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 6px;
+  align-items: center;
+}
+
+.move-number {
+  font-weight: 600;
+  color: var(--text-muted);
+  text-align: right;
+  font-size: 11px;
+}
+
+.move {
+  font-family: monospace;
+  color: var(--text-h);
+}
+
+/* Responsive breakpoint: stack sidebar below board at ~900px */
+@media (max-width: 900px) {
+  .play-game-container {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .play-sidebar {
+    grid-template-columns: 1fr;
+    max-height: none;
+    flex-direction: row;
+    gap: 12px;
+  }
+
+  .material-badge {
+    flex: 0 0 auto;
+  }
+
+  .captured-pieces {
+    flex: 0 0 auto;
+  }
+
+  .move-list {
+    flex: 1;
+    max-height: 150px;
+  }
 }
