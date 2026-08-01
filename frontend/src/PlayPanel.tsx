@@ -1,6 +1,11 @@
-import { useCallback, useRef, useState, useEffect } from "react";
-import { Chess } from "chess.js";
-import { Chessboard, type PieceDropHandlerArgs } from "react-chessboard";
+import { useCallback, useMemo, useRef, useState, useEffect } from "react";
+import { Chess, type Move, type Square } from "chess.js";
+import {
+  Chessboard,
+  type PieceDropHandlerArgs,
+  type PieceHandlerArgs,
+  type SquareHandlerArgs,
+} from "react-chessboard";
 import {
   ApiError,
   getEngineMove,
@@ -46,6 +51,31 @@ const PIECE_VALUES: Record<string, number> = {
 interface CapturedPiece {
   piece: string;
   color: "white" | "black";
+}
+
+interface LastMove {
+  from: string;
+  to: string;
+}
+
+interface LegalTarget {
+  square: string;
+  capture: boolean;
+}
+
+// Helper function to find the king square of the side to move (used for
+// check highlighting).
+function findKingSquare(chess: Chess): string | null {
+  const board = chess.board();
+  const sideToMove = chess.turn();
+  for (const row of board) {
+    for (const square of row) {
+      if (square && square.type === "k" && square.color === sideToMove) {
+        return square.square;
+      }
+    }
+  }
+  return null;
 }
 
 // Helper function to calculate material advantage from board state
@@ -136,6 +166,9 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [savedGame, setSavedGame] = useState<SavedGame | null>(null);
   const [saving, setSaving] = useState(false);
+  const [lastMove, setLastMove] = useState<LastMove | null>(null);
+  const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
+  const [legalTargets, setLegalTargets] = useState<LegalTarget[]>([]);
 
   // Auto-scroll move list to the bottom when new moves are added
   useEffect(() => {
@@ -185,8 +218,11 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
       try {
         const san = await getEngineMove(currentFen, skill);
         const chess = chessRef.current;
-        chess.move(san);
+        const move = chess.move(san);
         setFen(chess.fen());
+        if (move) {
+          setLastMove({ from: move.from, to: move.to });
+        }
         if (!checkGameOver(chess)) {
           setStatus({ state: "playing" });
         }
@@ -206,34 +242,165 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
     [skill, checkGameOver, onUnauthorized]
   );
 
-  const onPieceDrop = useCallback(
-    ({ sourceSquare, targetSquare }: PieceDropHandlerArgs): boolean => {
-      if (!targetSquare || status.state !== "playing") return false;
+  // Shared "apply this already-executed move, check for game over, request
+  // the engine's reply" logic. Both the drag-drop handler and the
+  // click-to-move handler call this after they've successfully applied a
+  // move via chess.move() — keeps the two input paths from duplicating the
+  // post-move bookkeeping.
+  const applyUserMove = useCallback(
+    (move: Move) => {
+      const chess = chessRef.current;
+      setFen(chess.fen());
+      setError(null);
+      setLastMove({ from: move.from, to: move.to });
+      setSelectedSquare(null);
+      setLegalTargets([]);
+
+      if (!checkGameOver(chess)) {
+        void requestEngineMove(chess.fen());
+      }
+    },
+    [checkGameOver, requestEngineMove]
+  );
+
+  const tryUserMove = useCallback(
+    (from: string, to: string): boolean => {
+      if (status.state !== "playing") return false;
 
       const chess = chessRef.current;
-      let move;
+      let move: Move | null;
       try {
-        move = chess.move({
-          from: sourceSquare,
-          to: targetSquare,
-          promotion: "q",
-        });
+        move = chess.move({ from, to, promotion: "q" });
       } catch {
         return false;
       }
       if (!move) return false;
 
-      setFen(chess.fen());
-      setError(null);
-
-      if (!checkGameOver(chess)) {
-        void requestEngineMove(chess.fen());
-      }
-
+      applyUserMove(move);
       return true;
     },
-    [status.state, checkGameOver, requestEngineMove]
+    [status.state, applyUserMove]
   );
+
+  const onPieceDrop = useCallback(
+    ({ sourceSquare, targetSquare }: PieceDropHandlerArgs): boolean => {
+      if (!targetSquare) return false;
+      return tryUserMove(sourceSquare, targetSquare);
+    },
+    [tryUserMove]
+  );
+
+  // Selects a square for click-to-move: if it holds a piece belonging to
+  // the side to move, highlight its legal destinations; otherwise clear
+  // the selection.
+  const selectSquare = useCallback((square: string) => {
+    const chess = chessRef.current;
+    const piece = chess.get(square as Square);
+    if (piece && piece.color === chess.turn()) {
+      const moves = chess.moves({ square: square as Square, verbose: true });
+      if (moves.length > 0) {
+        setSelectedSquare(square);
+        setLegalTargets(
+          moves.map((m) => ({ square: m.to, capture: !!m.captured }))
+        );
+        return;
+      }
+    }
+    setSelectedSquare(null);
+    setLegalTargets([]);
+  }, []);
+
+  // Shared click handler for both onSquareClick (empty squares) and
+  // onPieceClick (squares with a piece on them) — react-chessboard only
+  // fires one or the other depending on square contents.
+  const handleSquareInteraction = useCallback(
+    (square: string | null) => {
+      if (!square || status.state !== "playing") return;
+
+      if (selectedSquare) {
+        if (square === selectedSquare) {
+          setSelectedSquare(null);
+          setLegalTargets([]);
+          return;
+        }
+        if (legalTargets.some((t) => t.square === square)) {
+          tryUserMove(selectedSquare, square);
+          return;
+        }
+      }
+
+      selectSquare(square);
+    },
+    [status.state, selectedSquare, legalTargets, tryUserMove, selectSquare]
+  );
+
+  const onSquareClick = useCallback(
+    ({ square }: SquareHandlerArgs) => handleSquareInteraction(square),
+    [handleSquareInteraction]
+  );
+
+  const onPieceClick = useCallback(
+    ({ square }: PieceHandlerArgs) => handleSquareInteraction(square),
+    [handleSquareInteraction]
+  );
+
+  // Drag start also shows legal-move dots for the piece being dragged.
+  const onPieceDrag = useCallback(
+    ({ square }: PieceHandlerArgs) => {
+      if (status.state !== "playing" || !square) return;
+      selectSquare(square);
+    },
+    [status.state, selectSquare]
+  );
+
+  // Merge last-move, check, and legal-move-dot highlights into one
+  // squareStyles object without letting one source clobber another.
+  const squareStyles = useMemo(() => {
+    const styles: Record<string, React.CSSProperties> = {};
+    // A fresh instance built from `fen` (rather than reading chessRef.current
+    // directly) so this memo's dependency array is accurate — chessRef is
+    // mutated in place and wouldn't otherwise be a valid useMemo dependency.
+    const chess = new Chess(fen);
+
+    if (lastMove) {
+      styles[lastMove.from] = {
+        ...styles[lastMove.from],
+        backgroundColor: "var(--last-move-overlay)",
+      };
+      styles[lastMove.to] = {
+        ...styles[lastMove.to],
+        backgroundColor: "var(--last-move-overlay)",
+      };
+    }
+
+    if (chess.inCheck()) {
+      const kingSquare = findKingSquare(chess);
+      if (kingSquare) {
+        styles[kingSquare] = {
+          ...styles[kingSquare],
+          backgroundColor: "var(--check-overlay)",
+        };
+      }
+    }
+
+    for (const target of legalTargets) {
+      styles[target.square] = {
+        ...styles[target.square],
+        backgroundImage: target.capture
+          ? "radial-gradient(circle, transparent 58%, var(--legal-move-overlay) 60%, var(--legal-move-overlay) 72%, transparent 74%)"
+          : "radial-gradient(circle, var(--legal-move-overlay) 22%, transparent 24%)",
+      };
+    }
+
+    if (selectedSquare) {
+      styles[selectedSquare] = {
+        ...styles[selectedSquare],
+        backgroundColor: "var(--legal-move-overlay)",
+      };
+    }
+
+    return styles;
+  }, [fen, lastMove, legalTargets, selectedSquare]);
 
   const handleResign = useCallback(() => {
     if (status.state !== "playing") return;
@@ -246,6 +413,9 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
     setStatus({ state: "playing" });
     setError(null);
     setSavedGame(null);
+    setLastMove(null);
+    setSelectedSquare(null);
+    setLegalTargets([]);
   }, []);
 
   const isOver = status.state === "over";
@@ -345,6 +515,10 @@ function PlayPanel({ onUnauthorized }: { onUnauthorized: () => void }) {
                   options={{
                     position: fen,
                     onPieceDrop,
+                    onPieceDrag,
+                    onSquareClick,
+                    onPieceClick,
+                    squareStyles,
                     id: "play-vs-engine-board",
                     allowDragging: status.state === "playing",
                   }}
