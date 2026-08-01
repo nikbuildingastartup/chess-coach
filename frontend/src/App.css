@@ -61,7 +61,7 @@
 
 /* Play tab: override to allow board expansion in two-column layout */
 .board-section .board-container {
-  max-width: none;
+  max-width: min(100%, 640px);
   margin: 0;
 }
 
