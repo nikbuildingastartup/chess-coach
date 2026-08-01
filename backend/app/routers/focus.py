@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.analysis_backfill import BACKFILL_LIMIT, backfill_recent_games
@@ -71,20 +72,60 @@ def get_today_focus(
     """Return today's (UTC) cached daily focus, computing it in the
     background the first time it's requested for a given date.
 
-    If a `DailyFocus` row already exists for today (any status, including
-    "computing" from an in-flight earlier request), it's returned as-is --
-    the frontend is expected to poll while `status == "computing"`. This
-    also makes the endpoint idempotent: it never re-triggers computation
-    for a date that's already been kicked off.
+    If a `DailyFocus` row already exists for today with status "computing"
+    (an in-flight earlier request) or "ready" (a genuinely finished
+    computation), it's returned as-is -- the frontend is expected to poll
+    while `status == "computing"`. This also makes the endpoint idempotent
+    for those two statuses: it never re-triggers computation for a date
+    whose computation is already in progress or done.
+
+    A row with status "insufficient_data" or "error" is NOT a terminal
+    state worth caching for the rest of the day: the user may have played
+    more games since (fixing insufficient_data) or the failure may have
+    been transient (fixing error). In both cases, reset the row back to
+    "computing" and re-dispatch the background computation, same as the
+    no-row-yet path below.
+
+    This route is a sync `def`, which FastAPI runs in a threadpool -- two
+    concurrent requests for the same not-yet-existing date can both pass
+    the initial `SELECT` and then both attempt to `INSERT`, since
+    `DailyFocus.date` is unique. The second insert raises `IntegrityError`;
+    that's handled below by rolling back and re-selecting the row the
+    other request just won the race to create, rather than propagating a
+    500.
     """
     today = _today_utc()
     existing = session.exec(select(DailyFocus).where(DailyFocus.date == today)).first()
     if existing is not None:
+        if existing.status in ("computing", "ready"):
+            return _to_response(existing)
+
+        # "insufficient_data" or "error" -- retry instead of caching for
+        # the rest of the day.
+        existing.status = "computing"
+        session.add(existing)
+        session.commit()
+        session.refresh(existing)
+
+        if existing.id is None:
+            raise RuntimeError("DailyFocus.id is None after commit+refresh.")
+
+        background_tasks.add_task(_compute_daily_focus, existing.id)
         return _to_response(existing)
 
     focus = DailyFocus(date=today, status="computing", created_at=datetime.now(timezone.utc))
     session.add(focus)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # Lost a race with a concurrent request that inserted the same
+        # `date` between our SELECT and this INSERT -- roll back and
+        # return whichever row won.
+        session.rollback()
+        existing = session.exec(select(DailyFocus).where(DailyFocus.date == today)).first()
+        if existing is not None:
+            return _to_response(existing)
+        raise
     session.refresh(focus)
 
     if focus.id is None:

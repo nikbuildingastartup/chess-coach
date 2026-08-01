@@ -184,7 +184,10 @@ function PracticeBoard({
         <button
           type="button"
           onClick={handleNextPosition}
-          disabled={positions.length <= 1 && feedback.state === "idle"}
+          disabled={
+            feedback.state === "checking" ||
+            (positions.length <= 1 && feedback.state === "idle")
+          }
         >
           Next position
         </button>

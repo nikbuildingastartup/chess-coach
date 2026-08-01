@@ -60,6 +60,28 @@ OLD_SCHEMA_INDEX_SQL = """
 CREATE UNIQUE INDEX ix_game_chesscom_game_id ON game (chesscom_game_id)
 """
 
+# Shape of the `game` table as left by an earlier startup of the
+# already-merged play-vs-engine branch: `chesscom_game_id` already relaxed
+# to nullable (played games have none) and `source`/`analysis_json`/
+# `coaching_summary` already added, but `user_color` does not exist yet --
+# that's this branch's addition. Used to reproduce the Finding 2 scenario
+# (a real `source="played"` row predating `user_color`) without having to
+# replay the full pre-branch-to-intermediate migration by hand.
+INTERMEDIATE_SCHEMA_SQL = """
+CREATE TABLE game (
+    id INTEGER PRIMARY KEY,
+    chesscom_game_id TEXT,
+    pgn TEXT NOT NULL,
+    end_time DATETIME NOT NULL,
+    time_class TEXT NOT NULL,
+    result TEXT NOT NULL,
+    source VARCHAR NOT NULL DEFAULT 'chesscom',
+    analysis_json VARCHAR,
+    analyzed BOOLEAN NOT NULL,
+    coaching_summary VARCHAR
+)
+"""
+
 
 def _make_pre_branch_db(path: str) -> None:
     conn = sqlite3.connect(path)
@@ -358,3 +380,163 @@ def test_startup_check_proceeds_when_no_game_old_table_exists(tmp_path):
     _make_pre_branch_db(str(db_path))
     with engine_.begin() as conn:
         _check_no_interrupted_migration(conn)  # pre-branch `game`, no `game_old`: must not raise
+
+
+def test_migration_backfills_pre_user_color_played_games_for_reanalysis(tmp_path):
+    """Regression test: `source="played"` games created by the already-merged
+    Play Module feature BEFORE this branch have `user_color=NULL` (the
+    column didn't exist yet) and `analysis_json` predating the `"phase"`
+    field added to `analyze_game` in this branch.
+
+    Without a fix, `aggregate_weakness_data` silently drops these rows
+    (filters on `game.user_color is None`) while they still count toward
+    the "enough analyzed games" gate in `_compute_daily_focus` -- so a user
+    with several such games gets a confident-looking but wrong "no issues"
+    result instead of real data or an honest `insufficient_data` state.
+
+    The fix: the migration backfills `user_color='white'` for these rows
+    (the Play Module's documented invariant -- the human always plays
+    White, see `USER_SIDE` in `app/coaching.py`) AND resets
+    `analyzed=False`/`analysis_json=NULL` so `backfill_recent_games` picks
+    them up again and re-analyzes them with current, phase-tagging code --
+    rather than trying to patch the old JSON in place.
+
+    A `source="chesscom"` row with `user_color=NULL` must NOT be touched by
+    this same step: that field is null for those rows because it genuinely
+    isn't knowable yet (see `analysis_backfill.py`), not because it
+    predates the column, and the sync-time backfill handles it separately.
+    """
+    db_path = tmp_path / "pre_user_color_played_games.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(INTERMEDIATE_SCHEMA_SQL)
+        pre_phase_analysis_json = (
+            '[{"move_number": 1, "san": "e4", "side": "white", '
+            '"classification": "good", "eval_cp": 20, "best_move": null}]'
+        )
+        conn.execute(
+            "INSERT INTO game "
+            "(chesscom_game_id, pgn, end_time, time_class, result, analyzed, "
+            "source, analysis_json, coaching_summary) "
+            "VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "1. e4 e5",
+                "2024-01-01 00:00:00+00:00",
+                "untimed",
+                "win",
+                1,
+                "played",
+                pre_phase_analysis_json,
+                "Nice game overall.",
+            ),
+        )
+        # A Chess.com import row that also has no `user_color` yet, for a
+        # different reason (not yet re-synced) -- must NOT be touched.
+        conn.execute(
+            "INSERT INTO game "
+            "(chesscom_game_id, pgn, end_time, time_class, result, analyzed, "
+            "source, analysis_json, coaching_summary) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "https://www.chess.com/game/live/54321",
+                "1. d4 d5",
+                "2024-01-02 00:00:00+00:00",
+                "blitz",
+                "loss",
+                1,
+                "chesscom",
+                '[{"move_number": 1, "san": "d4", "side": "white", '
+                '"classification": "good", "eval_cp": 10, "best_move": null}]',
+                None,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    migration_engine = create_engine(f"sqlite:///{db_path}")
+    with migration_engine.begin() as conn:
+        _migrate_game_table(conn)
+
+    with migration_engine.begin() as conn:
+        played_row = conn.execute(
+            text(
+                "SELECT user_color, analyzed, analysis_json FROM game "
+                "WHERE source = 'played'"
+            )
+        ).one()
+        assert played_row.user_color == "white"
+        assert played_row.analyzed in (0, False)
+        assert played_row.analysis_json is None
+
+        chesscom_row = conn.execute(
+            text(
+                "SELECT user_color, analyzed, analysis_json FROM game "
+                "WHERE source = 'chesscom'"
+            )
+        ).one()
+        assert chesscom_row.user_color is None
+        assert chesscom_row.analyzed in (1, True)
+        assert chesscom_row.analysis_json is not None
+
+
+def test_migration_backfill_is_idempotent_on_repeated_runs(tmp_path):
+    """Running the migration twice must not re-reset an already-migrated
+    played game back to `analyzed=False` -- the backfill step must only
+    match rows still at `user_color IS NULL`, so once a row has been
+    backfilled to `user_color='white'` it's no longer a candidate."""
+    db_path = tmp_path / "idempotent_backfill.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(INTERMEDIATE_SCHEMA_SQL)
+        conn.execute(
+            "INSERT INTO game "
+            "(chesscom_game_id, pgn, end_time, time_class, result, analyzed, "
+            "source, analysis_json, coaching_summary) "
+            "VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "1. e4 e5",
+                "2024-01-01 00:00:00+00:00",
+                "untimed",
+                "win",
+                1,
+                "played",
+                '[{"move_number": 1, "san": "e4", "side": "white", '
+                '"classification": "good", "eval_cp": 20, "best_move": null}]',
+                "Nice game overall.",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    migration_engine = create_engine(f"sqlite:///{db_path}")
+    with migration_engine.begin() as conn:
+        _migrate_game_table(conn)
+
+    # Simulate the game having been re-analyzed since the first migration
+    # run (as `backfill_recent_games` would do): analyzed=True again, with
+    # fresh phase-tagged analysis_json.
+    fresh_analysis_json = (
+        '[{"move_number": 1, "san": "e4", "side": "white", '
+        '"classification": "good", "phase": "opening", "eval_cp": 20, '
+        '"best_move": null}]'
+    )
+    with migration_engine.begin() as conn:
+        conn.exec_driver_sql(
+            "UPDATE game SET analyzed = 1, analysis_json = ?",
+            (fresh_analysis_json,),
+        )
+
+    # A second migration run must be a no-op for this row -- it must NOT
+    # reset the freshly re-analyzed data back to NULL/False.
+    with migration_engine.begin() as conn:
+        _migrate_game_table(conn)
+
+    with migration_engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT user_color, analyzed, analysis_json FROM game")
+        ).one()
+        assert row.user_color == "white"
+        assert row.analyzed in (1, True)
+        assert row.analysis_json == fresh_analysis_json

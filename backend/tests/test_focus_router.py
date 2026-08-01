@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -255,3 +256,137 @@ def test_focus_today_marks_error_status_when_db_commit_fails_mid_computation(
     with Session(db_engine) as session:
         focus = session.exec(select(DailyFocus)).one()
         assert focus.status == "error"
+
+
+def test_focus_today_retries_when_existing_status_is_insufficient_data(db_client, db_engine):
+    """Regression test: a cached `insufficient_data` row must not be
+    returned as-is for the rest of the day -- if the user has since played
+    enough games, the next request should re-trigger computation and reuse
+    the same row (not insert a second one) rather than being stuck showing
+    stale `insufficient_data` until the next UTC date."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    with Session(db_engine) as session:
+        session.add(
+            DailyFocus(date=today, status="insufficient_data", created_at=datetime.now(timezone.utc))
+        )
+        session.commit()
+        for i in range(3):
+            _seed_analyzed_game(
+                session, game_id_suffix=str(i), end_time=BASE_TIME + timedelta(days=i)
+            )
+
+    with patch(
+        "app.routers.focus.generate_daily_focus",
+        return_value={
+            "headline": "Opening blunders",
+            "explanation": "You keep hanging pieces early.",
+            "recommendation": "Slow down in the opening.",
+        },
+    ):
+        response = db_client.get("/focus/today", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    # The response body reflects state right after the reset-to-"computing"
+    # commit, before the (synchronously-run-by-TestClient) background task
+    # updates it further -- same pattern as the other "computing" assertions
+    # in this file.
+    assert response.json()["status"] == "computing"
+
+    with Session(db_engine) as session:
+        rows = session.exec(select(DailyFocus)).all()
+        assert len(rows) == 1  # reused the existing row, didn't insert a second one
+        assert rows[0].status == "ready"
+        assert rows[0].headline == "Opening blunders"
+
+
+def test_focus_today_retries_when_existing_status_is_error(db_client, db_engine):
+    """Same as the `insufficient_data` retry case, but for a stale `error`
+    row -- a transient failure shouldn't lock the user out of the feature
+    for the rest of the day."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    with Session(db_engine) as session:
+        session.add(DailyFocus(date=today, status="error", created_at=datetime.now(timezone.utc)))
+        session.commit()
+        for i in range(3):
+            _seed_analyzed_game(
+                session, game_id_suffix=str(i), end_time=BASE_TIME + timedelta(days=i)
+            )
+
+    response = db_client.get("/focus/today", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "computing"
+
+    with Session(db_engine) as session:
+        rows = session.exec(select(DailyFocus)).all()
+        assert len(rows) == 1
+        assert rows[0].status == "ready"
+
+
+def test_focus_today_does_not_retry_when_existing_status_is_ready_or_computing(
+    db_client, db_engine
+):
+    """`ready` and `computing` are the only two statuses that should
+    short-circuit to an immediate return without dispatching new work."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    with Session(db_engine) as session:
+        session.add(
+            DailyFocus(
+                date=today,
+                status="ready",
+                headline="Existing headline",
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+    with patch("app.routers.focus._compute_daily_focus") as mock_compute:
+        response = db_client.get("/focus/today", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert response.json()["headline"] == "Existing headline"
+    mock_compute.assert_not_called()
+
+
+def test_focus_today_handles_concurrent_insert_race_without_500(db_client, db_engine):
+    """Regression test for the non-atomic check-then-insert race in `GET
+    /focus/today`.
+
+    Two concurrent requests can both pass the initial `SELECT` (no row for
+    today yet) and then both attempt to `INSERT` a `DailyFocus` row for the
+    same unique `date`. Real thread concurrency is emulated here by
+    patching `Session.commit`: the first time our request's session tries
+    to commit its new row, a second, independent session sneaks in and
+    commits a competing row for today FIRST, so when our original commit
+    then proceeds it collides with the unique constraint on `date` and
+    raises `IntegrityError` -- exactly like a genuine race would. The
+    route must catch that, roll back, and return the row the other
+    request won the race to create, instead of propagating a 500.
+    """
+    original_commit = Session.commit
+    injected = {"done": False}
+
+    def racing_commit(self, *args, **kwargs):
+        if not injected["done"]:
+            injected["done"] = True
+            with Session(db_engine) as other:
+                other.add(
+                    DailyFocus(
+                        date=datetime.now(timezone.utc).date().isoformat(),
+                        status="computing",
+                        created_at=datetime.now(timezone.utc),
+                    )
+                )
+                other.commit()
+        return original_commit(self, *args, **kwargs)
+
+    with patch.object(Session, "commit", racing_commit):
+        response = db_client.get("/focus/today", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "computing"
+
+    with Session(db_engine) as session:
+        rows = session.exec(select(DailyFocus)).all()
+        assert len(rows) == 1  # no duplicate row, and no unhandled 500
