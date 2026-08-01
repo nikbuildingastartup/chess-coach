@@ -178,3 +178,60 @@ def test_get_games_returns_games_ordered_by_end_time_descending(mock_archives, m
         "https://www.chess.com/game/live/1",
     ]
     assert set(body[0].keys()) == {"chesscom_game_id", "end_time", "time_class", "result"}
+
+
+def test_get_games_excludes_played_games():
+    """GET /games must scope to source == "chesscom".
+
+    Played-vs-engine games have `chesscom_game_id=None`, which
+    `GameListItem` (non-optional) can't represent -- including them here
+    used to make FastAPI's response validation raise a 500 for every
+    request once a single played game existed. Regression test for that:
+    seed one imported game and one played game directly into the DB and
+    confirm only the imported one comes back from the endpoint.
+    """
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+
+    imported = Game(
+        chesscom_game_id="https://www.chess.com/game/live/99",
+        pgn="1. e4 e5",
+        end_time=datetime.fromtimestamp(1700000000, tz=timezone.utc),
+        time_class="blitz",
+        result="win",
+        source="chesscom",
+    )
+    played = Game(
+        chesscom_game_id=None,
+        pgn="1. e4 e5",
+        end_time=datetime.now(timezone.utc),
+        time_class="untimed",
+        result="loss",
+        source="played",
+        analysis_json="[]",
+        analyzed=True,
+    )
+    with Session(engine) as session:
+        session.add(imported)
+        session.add(played)
+        session.commit()
+
+    def get_session_override():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = get_session_override
+    try:
+        with TestClient(app) as c:
+            response = c.get("/games", headers=AUTH_HEADERS)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["chesscom_game_id"] == "https://www.chess.com/game/live/99"

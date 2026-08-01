@@ -8,6 +8,7 @@ import {
   syncGames,
   type Game,
 } from "./api";
+import PlayPanel from "./PlayPanel";
 import "./App.css";
 
 function TokenGate({ onSubmit }: { onSubmit: (token: string) => void }) {
@@ -183,19 +184,44 @@ function SyncPanel({
   );
 }
 
-const NAV_TABS = ["Auth", "Cold start", "Sync", "Daily focus"] as const;
+type Tab = "sync" | "play";
 
-function TopNav() {
+const NAV_TABS: { key: Tab | null; label: string }[] = [
+  { key: null, label: "Auth" },
+  { key: null, label: "Cold start" },
+  { key: "sync", label: "Sync" },
+  { key: "play", label: "Play" },
+  { key: null, label: "Daily focus" },
+];
+
+function TopNav({
+  activeTab,
+  onTabChange,
+}: {
+  activeTab: Tab;
+  onTabChange: (tab: Tab) => void;
+}) {
   return (
     <nav className="top-nav">
-      {NAV_TABS.map((tab) => (
-        <span
-          key={tab}
-          className={tab === "Sync" ? "nav-pill nav-pill-active" : "nav-pill"}
-        >
-          {tab}
-        </span>
-      ))}
+      {NAV_TABS.map(({ key, label }) => {
+        if (key === null) {
+          return (
+            <span key={label} className="nav-pill nav-pill-disabled">
+              {label}
+            </span>
+          );
+        }
+        return (
+          <button
+            key={label}
+            type="button"
+            className={key === activeTab ? "nav-pill nav-pill-active" : "nav-pill"}
+            onClick={() => onTabChange(key)}
+          >
+            {label}
+          </button>
+        );
+      })}
     </nav>
   );
 }
@@ -205,6 +231,7 @@ function App() {
   const [games, setGames] = useState<Game[]>([]);
   const [gamesError, setGamesError] = useState<string | null>(null);
   const [syncedUsername, setSyncedUsername] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<Tab>("sync");
 
   const handleUnauthorized = useCallback(() => {
     clearToken();
@@ -247,29 +274,39 @@ function App() {
 
   return (
     <div className="page">
-      <TopNav />
-      <div className="app">
-        <p className="eyebrow">Sync</p>
-        <h1>
-          {syncedUsername ? `${syncedUsername} on Chess.com` : "Chess Coach"}
-        </h1>
-        <div className="card">
-          <SyncPanel
-            onSynced={(username) => {
-              setSyncedUsername(username);
-              loadGames();
-            }}
-            onUnauthorized={handleUnauthorized}
-          />
+      <TopNav activeTab={activeTab} onTabChange={setActiveTab} />
+      {activeTab === "sync" ? (
+        <div className="app">
+          <p className="eyebrow">Sync</p>
+          <h1>
+            {syncedUsername ? `${syncedUsername} on Chess.com` : "Chess Coach"}
+          </h1>
+          <div className="card">
+            <SyncPanel
+              onSynced={(username) => {
+                setSyncedUsername(username);
+                loadGames();
+              }}
+              onUnauthorized={handleUnauthorized}
+            />
+          </div>
+          <div className="card">
+            {gamesError && <p className="sync-error">{gamesError}</p>}
+            <GamesList games={games} />
+          </div>
+          <button type="button" className="focus-button" disabled>
+            See today's focus
+          </button>
         </div>
-        <div className="card">
-          {gamesError && <p className="sync-error">{gamesError}</p>}
-          <GamesList games={games} />
+      ) : (
+        <div className="app">
+          <p className="eyebrow">Play</p>
+          <h1>Play vs. the engine</h1>
+          <div className="card">
+            <PlayPanel onUnauthorized={handleUnauthorized} />
+          </div>
         </div>
-        <button type="button" className="focus-button" disabled>
-          See today's focus
-        </button>
-      </div>
+      )}
     </div>
   );
 }

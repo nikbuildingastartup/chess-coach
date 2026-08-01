@@ -82,6 +82,7 @@ async def sync_games(body: SyncRequest, session: Session = Depends(get_session))
                         end_time=datetime.fromtimestamp(raw_game["end_time"], tz=timezone.utc),
                         time_class=raw_game["time_class"],
                         result=_derive_result(raw_game, body.username),
+                        source="chesscom",
                     )
                 )
                 imported += 1
@@ -104,4 +105,15 @@ async def sync_games(body: SyncRequest, session: Session = Depends(get_session))
 
 @router.get("", response_model=list[GameListItem])
 def list_games(session: Session = Depends(get_session)) -> list[Game]:
-    return list(session.exec(select(Game).order_by(Game.end_time.desc())).all())
+    """List Chess.com-imported games (the Sync screen's data source).
+
+    Deliberately excludes played-vs-engine games (`source == "played"`):
+    those have `chesscom_game_id=None`, which `GameListItem` (declared
+    non-optional) cannot represent, and they're surfaced separately via
+    the Play tab's own endpoints (`POST /play/games`, `GET
+    /play/games/{id}/analysis`) instead.
+    """
+    games = session.exec(
+        select(Game).where(Game.source == "chesscom").order_by(Game.end_time.desc())
+    ).all()
+    return list(games)
