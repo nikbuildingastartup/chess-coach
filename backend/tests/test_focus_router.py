@@ -200,3 +200,58 @@ def test_focus_today_marks_error_status_when_computation_raises(db_client, db_en
     with Session(db_engine) as session:
         focus = session.exec(select(DailyFocus)).one()
         assert focus.status == "error"
+
+
+def test_focus_today_marks_error_status_when_db_commit_fails_mid_computation(
+    db_client, db_engine
+):
+    """Regression test for a missing `session.rollback()` in the except
+    block of `_compute_daily_focus`.
+
+    A DB-level failure (e.g. an IntegrityError from a commit inside
+    `backfill_recent_games`, which commits per-game within the same
+    session -- see `app/analysis_backfill.py`) leaves the SQLAlchemy
+    session in a state that requires an explicit `rollback()` before it
+    can be reused. Without that rollback, the except block's own
+    `session.get(DailyFocus, focus_id)` call raises too, which is caught
+    by the inner `except Exception` and silently logged -- leaving the
+    `DailyFocus` row stuck at `status="computing"` forever instead of
+    being marked `"error"`.
+
+    This is simulated here by having `backfill_recent_games` itself
+    trigger a real unique-constraint violation on commit, which is
+    exactly the kind of DB-level failure the original bug couldn't
+    recover from.
+    """
+    with Session(db_engine) as session:
+        for i in range(3):
+            _seed_analyzed_game(
+                session, game_id_suffix=str(i), end_time=BASE_TIME + timedelta(days=i)
+            )
+
+    def _raise_via_dirty_commit(session: Session) -> None:
+        # Duplicate chesscom_game_id -- violates the unique constraint on
+        # Game.chesscom_game_id, so this commit raises IntegrityError and
+        # leaves `session` needing an explicit rollback() before reuse,
+        # just like a real failed commit inside `backfill_recent_games`
+        # would.
+        session.add(
+            Game(
+                chesscom_game_id="g-0",
+                pgn=SHORT_PGN,
+                end_time=BASE_TIME,
+                time_class="blitz",
+                result="win",
+                source="chesscom",
+            )
+        )
+        session.commit()
+
+    with patch(
+        "app.routers.focus.backfill_recent_games", side_effect=_raise_via_dirty_commit
+    ):
+        db_client.get("/focus/today", headers=AUTH_HEADERS)
+
+    with Session(db_engine) as session:
+        focus = session.exec(select(DailyFocus)).one()
+        assert focus.status == "error"

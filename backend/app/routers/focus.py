@@ -145,6 +145,7 @@ def _compute_daily_focus(focus_id: int) -> None:
         except Exception:
             logger.exception("Failed to compute daily focus for id=%s.", focus_id)
             try:
+                session.rollback()
                 focus = session.get(DailyFocus, focus_id)
                 if focus is not None:
                     focus.status = "error"
