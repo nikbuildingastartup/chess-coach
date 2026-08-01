@@ -83,6 +83,9 @@ export interface PracticePosition {
   played_move: string;
   best_move: string | null;
   classification: string;
+  game_id: number;
+  move_number: number;
+  side: "white" | "black";
 }
 
 export interface DailyFocus {
@@ -174,12 +177,36 @@ export function getDailyFocus(): Promise<DailyFocus> {
   return request<DailyFocus>("/focus/today", { method: "GET" });
 }
 
+export interface PracticePositionsResult {
+  positions: PracticePosition[];
+  skipped_count: number;
+  solved_count: number;
+  total_tracked: number;
+}
+
+export function getPracticePositions(): Promise<PracticePositionsResult> {
+  return request<PracticePositionsResult>("/practice/positions", {
+    method: "GET",
+  });
+}
+
 export function checkPracticeMove(
   fen: string,
-  moveUci: string
+  moveUci: string,
+  position?: { game_id: number; move_number: number; side: "white" | "black" }
 ): Promise<CheckMoveResult> {
   return request<CheckMoveResult>("/practice/check-move", {
     method: "POST",
-    body: JSON.stringify({ fen, move_uci: moveUci }),
+    body: JSON.stringify({
+      fen,
+      move_uci: moveUci,
+      ...(position
+        ? {
+            game_id: position.game_id,
+            move_number: position.move_number,
+            side: position.side,
+          }
+        : {}),
+    }),
   });
 }
