@@ -104,6 +104,28 @@ export interface CheckMoveResult {
   played_eval_cp: number;
 }
 
+export interface UsageCallSiteBreakdown {
+  call_site: string;
+  calls: number;
+  cost_usd: number;
+}
+
+export interface UsageDayBreakdown {
+  date: string;
+  calls: number;
+  cost_usd: number;
+}
+
+export interface UsageSummary {
+  total_cost_usd: number;
+  total_calls: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  since: string | null;
+  by_call_site: UsageCallSiteBreakdown[];
+  by_day: UsageDayBreakdown[];
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
 
@@ -181,5 +203,11 @@ export function checkPracticeMove(
   return request<CheckMoveResult>("/practice/check-move", {
     method: "POST",
     body: JSON.stringify({ fen, move_uci: moveUci }),
+  });
+}
+
+export function getUsageSummary(days = 30): Promise<UsageSummary> {
+  return request<UsageSummary>(`/usage/summary?days=${days}`, {
+    method: "GET",
   });
 }
