@@ -74,11 +74,52 @@
   gap: 16px;
 }
 
-.coaching-summary {
+.practice-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.practice-board-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.practice-position-meta {
+  margin: 0;
+}
+
+.coaching-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.coaching-headline {
+  font-family: var(--serif);
+  font-size: 20px;
+  margin: 0;
+  color: var(--text-h);
+}
+
+.coaching-explanation {
   font-family: var(--serif);
   font-size: 16px;
   line-height: 155%;
   color: var(--text-h);
+  margin: 0;
+}
+
+.coaching-recommendation {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-h);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 12px 14px;
   margin: 0;
 }
 
