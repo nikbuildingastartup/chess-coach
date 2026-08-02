@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.models import Game
+from app.models import Game, PracticeAttempt
 
 
 @pytest.fixture()
@@ -85,3 +85,37 @@ def test_multiple_played_games_with_null_chesscom_game_id_are_allowed(session):
 
     games = session.exec(select(Game)).all()
     assert len(games) == 2
+
+
+def test_practice_attempt_can_be_created_with_defaults(session):
+    attempt = PracticeAttempt(
+        game_id=1,
+        move_number=3,
+        side="white",
+        fen="8/8/8/8/8/8/8/8 w - - 0 1",
+        created_at=datetime(2026, 1, 1, 12, 0, 0),
+    )
+    session.add(attempt)
+    session.commit()
+    session.refresh(attempt)
+
+    assert attempt.id is not None
+    assert attempt.solved is False
+    assert attempt.attempts_count == 0
+    assert attempt.last_attempted_at is None
+
+
+def test_practice_attempt_position_is_unique(session):
+    kwargs = dict(
+        game_id=1,
+        move_number=3,
+        side="white",
+        fen="8/8/8/8/8/8/8/8 w - - 0 1",
+        created_at=datetime(2026, 1, 1, 12, 0, 0),
+    )
+    session.add(PracticeAttempt(**kwargs))
+    session.commit()
+
+    session.add(PracticeAttempt(**kwargs))
+    with pytest.raises(IntegrityError):
+        session.commit()

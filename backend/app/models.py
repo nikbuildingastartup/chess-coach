@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime
+from sqlalchemy import Column, DateTime, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -59,3 +59,27 @@ class DailyFocus(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True)))
     progress_current: int = 0
     progress_total: int = 0
+
+
+class PracticeAttempt(SQLModel, table=True):
+    """Persisted solve state for one practice puzzle, identified by the
+    game move it was drawn from (`game_id`, `move_number`, `side` --
+    matches `fen_before_move`'s parameters and `analyze_game`'s per-move
+    tagging). Lets puzzles survive across sessions/days: solved puzzles
+    are skipped in future sets, incorrectly-solved ones are re-queued."""
+
+    __table_args__ = (
+        UniqueConstraint("game_id", "move_number", "side", name="uq_practiceattempt_position"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    game_id: int = Field(foreign_key="game.id", index=True)
+    move_number: int
+    side: str
+    fen: str
+    solved: bool = False
+    attempts_count: int = 0
+    last_attempted_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True)))

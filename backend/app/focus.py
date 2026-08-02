@@ -13,14 +13,14 @@ import logging
 from typing import Any
 
 from openai import OpenAI
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.chess_engine import fen_before_move
 from app.coaching import FAL_BASE_URL, FAL_MODEL
 from app.config import settings
 from app.llm_json import parse_structured_llm_response
 from app.llm_usage import record_llm_usage
-from app.models import Game
+from app.models import Game, PracticeAttempt
 
 logger = logging.getLogger(__name__)
 
@@ -162,21 +162,85 @@ def generate_daily_focus(
 
 
 def extract_practice_positions(
-    games: list[Game], aggregated_data: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """Extract up to `PRACTICE_POSITIONS_MAX` practice positions from the
-    flagged moves of `aggregated_data`'s most frequent pattern.
+    games: list[Game],
+    aggregated_data: dict[str, Any],
+    session: Session | None = None,
+    max_positions: int = PRACTICE_POSITIONS_MAX,
+) -> dict[str, Any]:
+    """Extract up to `max_positions` practice positions, interleaved
+    round-robin across the ranked weakness patterns in
+    `aggregated_data["moves_by_pattern"]` (falls back to the single
+    `top_pattern`/`top_pattern_moves` pair if that key is absent, so
+    older-shaped `aggregated_data` still works).
 
-    `top_pattern_moves` is already ordered blunder-before-mistake (via the
-    pattern-level tie-break in `aggregate_weakness_data`) and newest game
-    first. Each returned dict has `fen`, `played_move`, `best_move`,
-    `classification`.
+    If `session` is given, positions with a persisted `PracticeAttempt`
+    row marked `solved=True` are excluded, and positions with an *open*
+    attempt (`solved=False`, `attempts_count > 0` -- i.e. previously
+    answered wrong) are moved to the front of the queue ahead of
+    never-attempted positions, so incorrect puzzles resurface in a later
+    session. Without a session, no filtering or reordering happens.
+
+    Returns `{"positions": list[dict], "skipped_count": int}`. Each
+    position dict has `fen`, `played_move`, `best_move`, `classification`,
+    `game_id`, `move_number`, `side` -- the last three identify the puzzle
+    back to the server for `POST /practice/check-move` attempt tracking.
+    `skipped_count` counts flagged moves whose FEN reconstruction failed
+    and were excluded, so callers can surface that instead of the
+    position count just looking mysteriously short.
     """
     games_by_id = {game.id: game for game in games}
-    positions: list[dict[str, Any]] = []
 
-    for move in aggregated_data.get("top_pattern_moves") or []:
-        if len(positions) >= PRACTICE_POSITIONS_MAX:
+    moves_by_pattern = aggregated_data.get("moves_by_pattern")
+    if not moves_by_pattern:
+        top_pattern = aggregated_data.get("top_pattern")
+        top_pattern_moves = aggregated_data.get("top_pattern_moves") or []
+        if top_pattern_moves:
+            if top_pattern:
+                key = f"{top_pattern['phase']}:{top_pattern['classification']}"
+            else:
+                key = "top_pattern"
+            moves_by_pattern = {key: top_pattern_moves}
+        else:
+            moves_by_pattern = {}
+
+    # Round-robin interleave across patterns, in the patterns' ranked order.
+    move_queues = [list(moves) for moves in moves_by_pattern.values()]
+    interleaved: list[dict[str, Any]] = []
+    while any(move_queues):
+        for queue in move_queues:
+            if queue:
+                interleaved.append(queue.pop(0))
+
+    if session is not None:
+        game_ids = [g.id for g in games if g.id is not None]
+        attempts_by_key: dict[tuple[int, int, str], PracticeAttempt] = {}
+        if game_ids:
+            rows = session.exec(
+                select(PracticeAttempt).where(PracticeAttempt.game_id.in_(game_ids))
+            ).all()
+            attempts_by_key = {(row.game_id, row.move_number, row.side): row for row in rows}
+
+        def _attempt_for(move: dict[str, Any]) -> PracticeAttempt | None:
+            return attempts_by_key.get((move["game_id"], move["move_number"], move["side"]))
+
+        def _is_solved(move: dict[str, Any]) -> bool:
+            attempt = _attempt_for(move)
+            return attempt is not None and attempt.solved
+
+        def _is_open_retry(move: dict[str, Any]) -> bool:
+            attempt = _attempt_for(move)
+            return attempt is not None and not attempt.solved and attempt.attempts_count > 0
+
+        interleaved = [m for m in interleaved if not _is_solved(m)]
+        # Stable sort: open-retry moves move to the front, relative order
+        # preserved within each group.
+        interleaved.sort(key=lambda m: 0 if _is_open_retry(m) else 1)
+
+    positions: list[dict[str, Any]] = []
+    skipped_count = 0
+
+    for move in interleaved:
+        if len(positions) >= max_positions:
             break
 
         game = games_by_id.get(move["game_id"])
@@ -192,6 +256,7 @@ def extract_practice_positions(
                 move["move_number"],
                 move["side"],
             )
+            skipped_count += 1
             continue
 
         positions.append(
@@ -200,7 +265,10 @@ def extract_practice_positions(
                 "played_move": move["san"],
                 "best_move": move["best_move"],
                 "classification": move["classification"],
+                "game_id": move["game_id"],
+                "move_number": move["move_number"],
+                "side": move["side"],
             }
         )
 
-    return positions
+    return {"positions": positions, "skipped_count": skipped_count}

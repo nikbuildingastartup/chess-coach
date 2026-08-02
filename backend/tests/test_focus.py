@@ -241,13 +241,18 @@ def test_extract_practice_positions_builds_fen_played_move_and_best_move():
         ]
     }
 
-    positions = extract_practice_positions(games, aggregated)
+    result = extract_practice_positions(games, aggregated)
+    positions = result["positions"]
 
+    assert result["skipped_count"] == 0
     assert len(positions) == 1
     position = positions[0]
     assert position["played_move"] == "Qxf6"
     assert position["best_move"] == "Qxf3"
     assert position["classification"] == "blunder"
+    assert position["game_id"] == 1
+    assert position["move_number"] == 3
+    assert position["side"] == "white"
     # FEN should reflect the position right before White's move 3 (Qxf6):
     # White queen still on f3, not yet captured the knight on f6.
     assert " w " in position["fen"]
@@ -283,9 +288,9 @@ def test_extract_practice_positions_respects_max_and_skips_unknown_games():
     }
     games = [_game(1)]
 
-    positions = extract_practice_positions(games, aggregated)
+    result = extract_practice_positions(games, aggregated)
 
-    assert len(positions) == PRACTICE_POSITIONS_MAX
+    assert len(result["positions"]) == PRACTICE_POSITIONS_MAX
 
 
 def test_extract_practice_positions_skips_moves_fen_before_move_cannot_resolve():
@@ -305,6 +310,128 @@ def test_extract_practice_positions_skips_moves_fen_before_move_cannot_resolve()
         ]
     }
 
-    positions = extract_practice_positions(games, aggregated)
+    result = extract_practice_positions(games, aggregated)
 
-    assert positions == []
+    assert result["positions"] == []
+    assert result["skipped_count"] == 1
+
+
+# --- extract_practice_positions: multi-pattern interleave + re-queue -----
+
+from sqlmodel import Session, SQLModel, create_engine
+
+from app.models import PracticeAttempt
+
+
+def _move(game_id, move_number, san, phase, classification, end_time="2026-01-01T00:00:00+00:00"):
+    return {
+        "game_id": game_id,
+        "end_time": end_time,
+        "move_number": move_number,
+        "san": san,
+        "side": "white",
+        "classification": classification,
+        "phase": phase,
+        "eval_cp": -900,
+        "best_move": "Qxf3",
+    }
+
+
+MULTI_PATTERN_PGN = (
+    "1. e4 Nf6 2. Qf3 Nc6 3. Qxf6 gxf6 4. Nc3 d5 5. exd5 Qxd5 "
+    "6. Nxd5 Rb8 7. Nc3 e5 8. Bc4 Be6 9. Bxe6 fxe6"
+)
+
+
+def _multi_game(game_id: int) -> Game:
+    game = Game(
+        chesscom_game_id=f"g{game_id}",
+        pgn=MULTI_PATTERN_PGN,
+        end_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        time_class="blitz",
+        result="win",
+        source="chesscom",
+        analyzed=True,
+        user_color="white",
+    )
+    game.id = game_id
+    return game
+
+
+@pytest.fixture()
+def attempt_session():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        yield session
+
+
+def test_extract_practice_positions_interleaves_across_top_patterns():
+    games = [_multi_game(1)]
+    aggregated = {
+        "moves_by_pattern": {
+            "opening:blunder": [_move(1, 3, "Qxf6", "opening", "blunder")],
+            "middlegame:mistake": [_move(1, 5, "exd5", "middlegame", "mistake")],
+        },
+    }
+
+    result = extract_practice_positions(games, aggregated, max_positions=2)
+
+    classifications = [p["classification"] for p in result["positions"]]
+    assert set(classifications) == {"blunder", "mistake"}
+
+
+def test_extract_practice_positions_skips_solved_positions(attempt_session):
+    games = [_multi_game(1)]
+    attempt_session.add(
+        PracticeAttempt(
+            game_id=1,
+            move_number=3,
+            side="white",
+            fen="irrelevant",
+            solved=True,
+            attempts_count=1,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    attempt_session.commit()
+
+    aggregated = {
+        "moves_by_pattern": {
+            "opening:blunder": [_move(1, 3, "Qxf6", "opening", "blunder")],
+        },
+    }
+
+    result = extract_practice_positions(games, aggregated, session=attempt_session)
+
+    assert result["positions"] == []
+
+
+def test_extract_practice_positions_requeues_open_wrong_attempts_first(attempt_session):
+    games = [_multi_game(1)]
+    # move_number=3 was answered incorrectly before (open, unsolved);
+    # move_number=5 has never been attempted.
+    attempt_session.add(
+        PracticeAttempt(
+            game_id=1,
+            move_number=3,
+            side="white",
+            fen="irrelevant",
+            solved=False,
+            attempts_count=1,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    attempt_session.commit()
+
+    aggregated = {
+        "moves_by_pattern": {
+            "middlegame:mistake": [_move(1, 5, "exd5", "middlegame", "mistake")],
+            "opening:blunder": [_move(1, 3, "Qxf6", "opening", "blunder")],
+        },
+    }
+
+    result = extract_practice_positions(games, aggregated, session=attempt_session, max_positions=1)
+
+    assert len(result["positions"]) == 1
+    assert result["positions"][0]["move_number"] == 3

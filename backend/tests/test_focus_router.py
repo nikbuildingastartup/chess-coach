@@ -114,7 +114,7 @@ def test_focus_today_returns_insufficient_data_below_min_games(db_client, db_eng
         assert focus.status == "insufficient_data"
 
 
-def test_focus_today_computes_ready_focus_with_practice_positions(db_client, db_engine):
+def test_focus_today_computes_ready_focus(db_client, db_engine):
     with Session(db_engine) as session:
         for i in range(3):
             _seed_analyzed_game(
@@ -141,16 +141,50 @@ def test_focus_today_computes_ready_focus_with_practice_positions(db_client, db_
     assert body["headline"] == "Opening blunders"
     assert body["explanation"] == "You keep hanging pieces early."
     assert body["recommendation"] == "Slow down in the opening."
-    assert len(body["practice_positions"]) >= 1
-    position = body["practice_positions"][0]
-    assert position["played_move"] == "Qxf6"
-    assert position["best_move"] == "Nf3"
-    assert position["classification"] == "blunder"
-    assert "fen" in position
 
     with Session(db_engine) as session:
         rows = session.exec(select(DailyFocus)).all()
         assert len(rows) == 1  # only one row for today, despite two GET calls
+
+
+def test_focus_today_ready_row_with_legacy_practice_positions_json_does_not_500(
+    db_client, db_engine
+):
+    """Regression test: a `DailyFocus` row persisted by an older version of
+    this code stored `practice_positions_json` as a list of dicts with only
+    `fen`/`played_move`/`best_move`/`classification` -- no `game_id`/
+    `move_number`/`side` (those fields were added later, and `_to_response`
+    used to eagerly parse this JSON into `PracticePosition` models, which
+    require them). `GET /focus/today` must not 500 when it encounters such
+    a row; the fix is to stop parsing `practice_positions_json` in the
+    response path entirely."""
+    legacy_positions = [
+        {
+            "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+            "played_move": "Qxf6",
+            "best_move": "Nf3",
+            "classification": "blunder",
+        }
+    ]
+    with Session(db_engine) as session:
+        focus = DailyFocus(
+            date=datetime.now(timezone.utc).date().isoformat(),
+            status="ready",
+            headline="Old headline",
+            explanation="Old explanation",
+            recommendation="Old recommendation",
+            practice_positions_json=json.dumps(legacy_positions),
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(focus)
+        session.commit()
+
+    response = db_client.get("/focus/today", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ready"
+    assert body["headline"] == "Old headline"
 
 
 def test_focus_today_with_no_games_at_all_returns_insufficient_data(db_client, db_engine):

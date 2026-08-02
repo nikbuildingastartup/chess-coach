@@ -5,8 +5,11 @@ import {
   ApiError,
   checkPracticeMove,
   getDailyFocus,
+  getPracticePositions,
   type CheckMoveResult,
   type DailyFocus,
+  type PracticePosition,
+  type PracticePositionsResult,
 } from "./api";
 
 const POLL_INTERVAL_MS = 4000;
@@ -47,13 +50,16 @@ function DailyFocusCard({ focus }: { focus: DailyFocus }) {
 }
 
 function PracticeBoard({
-  focus,
+  positions,
+  onAttemptRecorded,
+  onRequestNewSet,
   onUnauthorized,
 }: {
-  focus: DailyFocus;
+  positions: PracticePosition[];
+  onAttemptRecorded: (counts: { solved_count: number; total_tracked: number }) => void;
+  onRequestNewSet: () => void;
   onUnauthorized: () => void;
 }) {
-  const positions = focus.practice_positions;
   const [index, setIndex] = useState(0);
   const chessRef = useRef(new Chess(positions[0].fen));
   const [fen, setFen] = useState(chessRef.current.fen());
@@ -68,11 +74,27 @@ function PracticeBoard({
     setError(null);
   }, [positions]);
 
+  // PracticePanel re-renders PracticeBoard in place (no `key`) whenever a
+  // new puzzle set is fetched, so the board's own state must resync itself
+  // whenever the `positions` array identity changes — otherwise the last
+  // solved position from the old set would stay on screen indefinitely.
+  useEffect(() => {
+    setIndex(0);
+    chessRef.current = new Chess(positions[0].fen);
+    setFen(chessRef.current.fen());
+    setFeedback({ state: "idle" });
+    setError(null);
+  }, [positions]);
+
   const handleNextPosition = useCallback(() => {
-    const nextIndex = (index + 1) % positions.length;
+    if (index + 1 >= positions.length) {
+      onRequestNewSet();
+      return;
+    }
+    const nextIndex = index + 1;
     setIndex(nextIndex);
     loadPosition(nextIndex);
-  }, [index, positions.length, loadPosition]);
+  }, [index, positions.length, loadPosition, onRequestNewSet]);
 
   const onPieceDrop = useCallback(
     ({ sourceSquare, targetSquare }: PieceDropHandlerArgs): boolean => {
@@ -96,6 +118,7 @@ function PracticeBoard({
 
       const promotion = move.promotion ?? "";
       const moveUci = `${sourceSquare}${targetSquare}${promotion}`;
+      const position = positions[index];
 
       setFeedback({ state: "checking" });
       setError(null);
@@ -104,7 +127,12 @@ function PracticeBoard({
         try {
           const result: CheckMoveResult = await checkPracticeMove(
             startFen,
-            moveUci
+            moveUci,
+            {
+              game_id: position.game_id,
+              move_number: position.move_number,
+              side: position.side,
+            }
           );
           const bestMoveSan = result.best_move
             ? uciToSan(startFen, result.best_move)
@@ -114,6 +142,12 @@ function PracticeBoard({
             correct: result.correct,
             bestMoveSan,
           });
+          if (result.solved_count != null && result.total_tracked != null) {
+            onAttemptRecorded({
+              solved_count: result.solved_count,
+              total_tracked: result.total_tracked,
+            });
+          }
         } catch (err) {
           if (err instanceof ApiError && err.kind === "unauthorized") {
             onUnauthorized();
@@ -132,7 +166,7 @@ function PracticeBoard({
 
       return true;
     },
-    [feedback.state, onUnauthorized]
+    [feedback.state, index, positions, onUnauthorized, onAttemptRecorded]
   );
 
   const position = positions[index];
@@ -181,14 +215,7 @@ function PracticeBoard({
       {error && <p className="sync-error">{error}</p>}
 
       <div className="play-controls">
-        <button
-          type="button"
-          onClick={handleNextPosition}
-          disabled={
-            feedback.state === "checking" ||
-            (positions.length <= 1 && feedback.state === "idle")
-          }
-        >
+        <button type="button" onClick={handleNextPosition} disabled={feedback.state === "checking"}>
           Next position
         </button>
       </div>
@@ -198,8 +225,27 @@ function PracticeBoard({
 
 function PracticePanel({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [focus, setFocus] = useState<DailyFocus | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [focusError, setFocusError] = useState<string | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [practice, setPractice] = useState<PracticePositionsResult | null>(null);
+  const [practiceError, setPracticeError] = useState<string | null>(null);
+
+  const loadPracticePositions = useCallback(async () => {
+    try {
+      const result = await getPracticePositions();
+      setPractice(result);
+      setPracticeError(null);
+    } catch (err) {
+      if (err instanceof ApiError && err.kind === "unauthorized") {
+        onUnauthorized();
+        return;
+      }
+      setPracticeError(
+        err instanceof ApiError ? err.message : "Failed to load practice puzzles."
+      );
+    }
+  }, [onUnauthorized]);
 
   useEffect(() => {
     let cancelled = false;
@@ -209,9 +255,11 @@ function PracticePanel({ onUnauthorized }: { onUnauthorized: () => void }) {
         const result = await getDailyFocus();
         if (cancelled) return;
         setFocus(result);
-        setError(null);
+        setFocusError(null);
         if (result.status === "computing") {
           pollTimer.current = setTimeout(poll, POLL_INTERVAL_MS);
+        } else if (result.status === "ready") {
+          void loadPracticePositions();
         }
       } catch (err) {
         if (cancelled) return;
@@ -219,10 +267,8 @@ function PracticePanel({ onUnauthorized }: { onUnauthorized: () => void }) {
           onUnauthorized();
           return;
         }
-        setError(
-          err instanceof ApiError
-            ? err.message
-            : "Failed to load today's focus."
+        setFocusError(
+          err instanceof ApiError ? err.message : "Failed to load today's focus."
         );
       }
     };
@@ -233,10 +279,17 @@ function PracticePanel({ onUnauthorized }: { onUnauthorized: () => void }) {
       cancelled = true;
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
-  }, [onUnauthorized]);
+  }, [onUnauthorized, loadPracticePositions]);
 
-  if (error) {
-    return <p className="sync-error">{error}</p>;
+  const handleAttemptRecorded = useCallback(
+    (counts: { solved_count: number; total_tracked: number }) => {
+      setPractice((prev) => (prev ? { ...prev, ...counts } : prev));
+    },
+    []
+  );
+
+  if (focusError) {
+    return <p className="sync-error">{focusError}</p>;
   }
 
   if (!focus || focus.status === "computing") {
@@ -259,10 +312,7 @@ function PracticePanel({ onUnauthorized }: { onUnauthorized: () => void }) {
         </div>
         {hasProgress && (
           <div className="progress-bar-track">
-            <div
-              className="progress-bar-fill"
-              style={{ width: `${percent}%` }}
-            />
+            <div className="progress-bar-fill" style={{ width: `${percent}%` }} />
           </div>
         )}
       </div>
@@ -290,12 +340,34 @@ function PracticePanel({ onUnauthorized }: { onUnauthorized: () => void }) {
   return (
     <div className="practice-panel">
       <DailyFocusCard focus={focus} />
-      {focus.practice_positions.length > 0 ? (
-        <PracticeBoard focus={focus} onUnauthorized={onUnauthorized} />
-      ) : (
-        <p className="muted">
-          No practice positions available from today's focus yet.
+
+      {practiceError && <p className="sync-error">{practiceError}</p>}
+
+      {practice && practice.total_tracked > 0 && (
+        <p className="muted practice-progress">
+          Solved {practice.solved_count} of {practice.total_tracked} tracked puzzles
         </p>
+      )}
+
+      {practice && practice.skipped_count > 0 && (
+        <p className="sync-error">
+          {practice.skipped_count} puzzle
+          {practice.skipped_count === 1 ? "" : "s"} couldn't be loaded from
+          your games and were skipped.
+        </p>
+      )}
+
+      {practice && practice.positions.length > 0 ? (
+        <PracticeBoard
+          positions={practice.positions}
+          onAttemptRecorded={handleAttemptRecorded}
+          onRequestNewSet={() => void loadPracticePositions()}
+          onUnauthorized={onUnauthorized}
+        />
+      ) : practice ? (
+        <p className="muted">No practice positions available right now.</p>
+      ) : (
+        <p className="muted">Loading practice puzzles...</p>
       )}
     </div>
   );
