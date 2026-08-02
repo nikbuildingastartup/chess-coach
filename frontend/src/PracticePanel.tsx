@@ -51,12 +51,12 @@ function DailyFocusCard({ focus }: { focus: DailyFocus }) {
 
 function PracticeBoard({
   positions,
-  onSolvedCorrectly,
+  onAttemptRecorded,
   onRequestNewSet,
   onUnauthorized,
 }: {
   positions: PracticePosition[];
-  onSolvedCorrectly: () => void;
+  onAttemptRecorded: (counts: { solved_count: number; total_tracked: number }) => void;
   onRequestNewSet: () => void;
   onUnauthorized: () => void;
 }) {
@@ -142,7 +142,12 @@ function PracticeBoard({
             correct: result.correct,
             bestMoveSan,
           });
-          if (result.correct) onSolvedCorrectly();
+          if (result.solved_count != null && result.total_tracked != null) {
+            onAttemptRecorded({
+              solved_count: result.solved_count,
+              total_tracked: result.total_tracked,
+            });
+          }
         } catch (err) {
           if (err instanceof ApiError && err.kind === "unauthorized") {
             onUnauthorized();
@@ -161,7 +166,7 @@ function PracticeBoard({
 
       return true;
     },
-    [feedback.state, index, positions, onUnauthorized, onSolvedCorrectly]
+    [feedback.state, index, positions, onUnauthorized, onAttemptRecorded]
   );
 
   const position = positions[index];
@@ -276,11 +281,12 @@ function PracticePanel({ onUnauthorized }: { onUnauthorized: () => void }) {
     };
   }, [onUnauthorized, loadPracticePositions]);
 
-  const handleSolvedCorrectly = useCallback(() => {
-    setPractice((prev) =>
-      prev ? { ...prev, solved_count: prev.solved_count + 1 } : prev
-    );
-  }, []);
+  const handleAttemptRecorded = useCallback(
+    (counts: { solved_count: number; total_tracked: number }) => {
+      setPractice((prev) => (prev ? { ...prev, ...counts } : prev));
+    },
+    []
+  );
 
   if (focusError) {
     return <p className="sync-error">{focusError}</p>;
@@ -354,7 +360,7 @@ function PracticePanel({ onUnauthorized }: { onUnauthorized: () => void }) {
       {practice && practice.positions.length > 0 ? (
         <PracticeBoard
           positions={practice.positions}
-          onSolvedCorrectly={handleSolvedCorrectly}
+          onAttemptRecorded={handleAttemptRecorded}
           onRequestNewSet={() => void loadPracticePositions()}
           onUnauthorized={onUnauthorized}
         />

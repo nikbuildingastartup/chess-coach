@@ -247,7 +247,10 @@ def test_check_move_records_attempt_when_position_identity_given(db_client, db_e
     )
 
     assert response.status_code == 200
-    assert response.json()["correct"] is False
+    body = response.json()
+    assert body["correct"] is False
+    assert body["solved_count"] == 0
+    assert body["total_tracked"] == 1
 
     with Session(db_engine) as session:
         attempt = session.exec(select(PracticeAttempt)).one()
@@ -285,7 +288,7 @@ def test_check_move_marks_attempt_solved_once_any_attempt_is_correct(db_client, 
     ).json()
     best_move = discovery["best_move"]
 
-    db_client.post(
+    final = db_client.post(
         "/practice/check-move",
         json={
             "fen": BEFORE_BLUNDER_FEN,
@@ -296,6 +299,10 @@ def test_check_move_marks_attempt_solved_once_any_attempt_is_correct(db_client, 
         },
         headers=AUTH_HEADERS,
     )
+
+    final_body = final.json()
+    assert final_body["solved_count"] == 1
+    assert final_body["total_tracked"] == 1
 
     with Session(db_engine) as session:
         attempt = session.exec(
@@ -316,6 +323,11 @@ def test_check_move_without_position_identity_does_not_create_attempt(db_client,
         headers=AUTH_HEADERS,
     )
     assert response.status_code == 200
+    body = response.json()
+    # No identity given -- no attempt is recorded, but the counts still
+    # reflect existing (empty) DB state rather than being omitted.
+    assert body["solved_count"] == 0
+    assert body["total_tracked"] == 0
 
     with Session(db_engine) as session:
         assert session.exec(select(PracticeAttempt)).all() == []

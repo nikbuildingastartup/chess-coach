@@ -29,6 +29,8 @@ class CheckMoveResponse(BaseModel):
     correct: bool
     best_move: str | None
     played_eval_cp: int
+    solved_count: int | None = None
+    total_tracked: int | None = None
 
 
 class PracticePositionsResponse(BaseModel):
@@ -52,7 +54,13 @@ def check_move_endpoint(
             session, body.game_id, body.move_number, body.side, body.fen, result["correct"]
         )
 
-    return CheckMoveResponse(**result)
+    # Always return the authoritative solved/tracked counts from the DB
+    # (regardless of whether identity fields were provided) so the frontend
+    # never has to guess at these via optimistic local increments -- the
+    # server is the single source of truth for both counters.
+    solved_count, total_tracked = _practice_counts(session)
+
+    return CheckMoveResponse(**result, solved_count=solved_count, total_tracked=total_tracked)
 
 
 def _record_attempt(
@@ -91,6 +99,20 @@ def _record_attempt(
     session.commit()
 
 
+def _practice_counts(session: Session) -> tuple[int, int]:
+    """Return `(solved_count, total_tracked)` across all `PracticeAttempt`
+    rows -- the single source of truth for these counters, used by both
+    `/practice/positions` and `/practice/check-move` so the frontend never
+    has to compute or guess them locally."""
+    total_tracked = session.exec(select(func.count()).select_from(PracticeAttempt)).one()
+    solved_count = session.exec(
+        select(func.count())
+        .select_from(PracticeAttempt)
+        .where(PracticeAttempt.solved == True)  # noqa: E712
+    ).one()
+    return solved_count, total_tracked
+
+
 @router.get("/positions", response_model=PracticePositionsResponse)
 def get_practice_positions(session: Session = Depends(get_session)) -> PracticePositionsResponse:
     """Generate a fresh practice puzzle set on demand, independent of the
@@ -108,12 +130,7 @@ def get_practice_positions(session: Session = Depends(get_session)) -> PracticeP
         games, aggregated, session=session, max_positions=PRACTICE_POSITIONS_MAX
     )
 
-    total_tracked = session.exec(select(func.count()).select_from(PracticeAttempt)).one()
-    solved_count = session.exec(
-        select(func.count())
-        .select_from(PracticeAttempt)
-        .where(PracticeAttempt.solved == True)  # noqa: E712
-    ).one()
+    solved_count, total_tracked = _practice_counts(session)
 
     return PracticePositionsResponse(
         positions=[PracticePosition(**p) for p in extraction["positions"]],

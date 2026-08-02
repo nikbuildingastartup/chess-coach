@@ -96,7 +96,6 @@ export interface DailyFocus {
   explanation: string | null;
   recommendation: string | null;
   created_at: string;
-  practice_positions: PracticePosition[];
   progress_current: number;
   progress_total: number;
 }
@@ -105,6 +104,8 @@ export interface CheckMoveResult {
   correct: boolean;
   best_move: string | null;
   played_eval_cp: number;
+  solved_count: number | null;
+  total_tracked: number | null;
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
