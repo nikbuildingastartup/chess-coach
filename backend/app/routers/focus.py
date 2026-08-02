@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 from app.analysis_backfill import BACKFILL_LIMIT, backfill_recent_games
 from app.auth import require_auth
 from app.db import engine, get_session
-from app.focus import PRACTICE_POSITIONS_MAX, extract_practice_positions, generate_daily_focus
+from app.focus import generate_daily_focus
 from app.models import DailyFocus, Game
 from app.weakness_profile import MIN_GAMES_FOR_PATTERN, aggregate_weakness_data
 
@@ -37,9 +37,7 @@ class FocusResponse(BaseModel):
     explanation: str | None = None
     recommendation: str | None = None
     source_game_ids_json: str | None = None
-    practice_positions_json: str | None = None
     created_at: datetime
-    practice_positions: list[PracticePosition] = []
     progress_current: int
     progress_total: int
 
@@ -47,10 +45,6 @@ class FocusResponse(BaseModel):
 def _to_response(focus: DailyFocus) -> FocusResponse:
     if focus.id is None:
         raise RuntimeError("DailyFocus.id is None; expected a persisted row.")
-
-    practice_positions_raw = (
-        json.loads(focus.practice_positions_json) if focus.practice_positions_json else []
-    )
 
     return FocusResponse(
         id=focus.id,
@@ -60,9 +54,7 @@ def _to_response(focus: DailyFocus) -> FocusResponse:
         explanation=focus.explanation,
         recommendation=focus.recommendation,
         source_game_ids_json=focus.source_game_ids_json,
-        practice_positions_json=focus.practice_positions_json,
         created_at=focus.created_at,
-        practice_positions=[PracticePosition(**p) for p in practice_positions_raw],
         progress_current=focus.progress_current,
         progress_total=focus.progress_total,
     )
@@ -146,10 +138,11 @@ def get_today_focus(
 
 
 def _compute_daily_focus(focus_id: int) -> None:
-    """Backfill -> aggregate -> generate -> extract practice positions ->
-    persist. Runs after the `GET /focus/today` response has already been
-    sent (via `BackgroundTasks`), so it must open its own DB session --
-    the request-scoped session from `get_session` is closed by then.
+    """Backfill -> aggregate -> generate -> persist. Practice puzzles are
+    fetched separately via `GET /practice/positions`, not computed here.
+    Runs after the `GET /focus/today` response has already been sent (via
+    `BackgroundTasks`), so it must open its own DB session -- the
+    request-scoped session from `get_session` is closed by then.
 
     Never lets an exception propagate: any failure along the way is
     logged and the `DailyFocus` row is marked `status="error"` so the
@@ -188,17 +181,12 @@ def _compute_daily_focus(focus_id: int) -> None:
 
             aggregated = aggregate_weakness_data(games)
             focus_text = generate_daily_focus(aggregated)
-            extraction = extract_practice_positions(
-                games, aggregated, session=session, max_positions=PRACTICE_POSITIONS_MAX
-            )
-            practice_positions = extraction["positions"]
 
             focus.status = "ready"
             focus.headline = focus_text.get("headline")
             focus.explanation = focus_text.get("explanation")
             focus.recommendation = focus_text.get("recommendation")
             focus.source_game_ids_json = json.dumps(aggregated.get("affected_game_ids", []))
-            focus.practice_positions_json = json.dumps(practice_positions)
             session.add(focus)
             session.commit()
         except Exception:
