@@ -28,6 +28,23 @@ class AppSettings(SQLModel, table=True):
     chesscom_username: str | None = None
 
 
+class LlmUsage(SQLModel, table=True):
+    """One row per successful fal.ai/Haiku call, for cost tracking."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True)))
+    call_site: str  # "coaching" | "focus"
+    model: str  # e.g. "anthropic/claude-haiku-4.5" -- stored, not
+                # hardcoded, so a future model change doesn't silently
+                # mislabel old rows
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    input_cost_usd: float
+    output_cost_usd: float
+    total_cost_usd: float
+
+
 class DailyFocus(SQLModel, table=True):
     """One cached daily-focus computation, keyed by UTC calendar date."""
 

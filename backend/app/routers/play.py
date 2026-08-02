@@ -85,7 +85,7 @@ def save_played_game(
             "assigned a primary key."
         )
 
-    coaching = generate_coaching_summary(body.pgn, analysis, body.result)
+    coaching = generate_coaching_summary(body.pgn, analysis, body.result, session)
     game.coaching_summary = json.dumps(coaching) if coaching is not None else None
     session.add(game)
     session.commit()

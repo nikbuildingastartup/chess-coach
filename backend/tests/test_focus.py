@@ -2,9 +2,11 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.focus import PRACTICE_POSITIONS_MAX, extract_practice_positions, generate_daily_focus
-from app.models import Game
+from app.models import Game, LlmUsage
 
 AGGREGATED = {
     "total_games": 5,
@@ -37,13 +39,26 @@ EMPTY_AGGREGATED = {
 }
 
 
-def _mock_openai_response(text: str) -> MagicMock:
+def _mock_openai_response(text: str, usage: MagicMock | None = None) -> MagicMock:
     response = MagicMock()
     response.choices = [MagicMock(message=MagicMock(content=text))]
+    response.usage = usage
     return response
 
 
-def test_generate_daily_focus_returns_parsed_json_on_success():
+@pytest.fixture()
+def session():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as s:
+        yield s
+
+
+def test_generate_daily_focus_returns_parsed_json_on_success(session):
     with patch("app.focus.settings") as mock_settings:
         mock_settings.fal_api_key = "test-fal-key"
         with patch("app.focus.OpenAI") as mock_openai_cls:
@@ -54,7 +69,7 @@ def test_generate_daily_focus_returns_parsed_json_on_success():
             )
             mock_openai_cls.return_value = mock_client
 
-            result = generate_daily_focus(AGGREGATED)
+            result = generate_daily_focus(AGGREGATED, session)
 
     assert result == {
         "headline": "Opening blunders",
@@ -65,7 +80,7 @@ def test_generate_daily_focus_returns_parsed_json_on_success():
     assert create_kwargs["model"] == "anthropic/claude-haiku-4.5"
 
 
-def test_generate_daily_focus_tolerantly_parses_a_markdown_fenced_response():
+def test_generate_daily_focus_tolerantly_parses_a_markdown_fenced_response(session):
     with patch("app.focus.settings") as mock_settings:
         mock_settings.fal_api_key = "test-fal-key"
         with patch("app.focus.OpenAI") as mock_openai_cls:
@@ -75,16 +90,16 @@ def test_generate_daily_focus_tolerantly_parses_a_markdown_fenced_response():
             )
             mock_openai_cls.return_value = mock_client
 
-            result = generate_daily_focus(AGGREGATED)
+            result = generate_daily_focus(AGGREGATED, session)
 
     assert result == {"headline": "H", "explanation": "E", "recommendation": "R"}
 
 
-def test_generate_daily_focus_falls_back_to_stats_text_without_api_key():
+def test_generate_daily_focus_falls_back_to_stats_text_without_api_key(session):
     with patch("app.focus.settings") as mock_settings:
         mock_settings.fal_api_key = None
         with patch("app.focus.OpenAI") as mock_openai_cls:
-            result = generate_daily_focus(AGGREGATED)
+            result = generate_daily_focus(AGGREGATED, session)
 
     mock_openai_cls.assert_not_called()
     assert result["headline"] is not None
@@ -94,7 +109,7 @@ def test_generate_daily_focus_falls_back_to_stats_text_without_api_key():
     assert "4" in result["explanation"]
 
 
-def test_generate_daily_focus_falls_back_to_stats_text_on_api_error():
+def test_generate_daily_focus_falls_back_to_stats_text_on_api_error(session):
     with patch("app.focus.settings") as mock_settings:
         mock_settings.fal_api_key = "test-fal-key"
         with patch("app.focus.OpenAI") as mock_openai_cls:
@@ -102,22 +117,22 @@ def test_generate_daily_focus_falls_back_to_stats_text_on_api_error():
             mock_client.chat.completions.create.side_effect = RuntimeError("boom")
             mock_openai_cls.return_value = mock_client
 
-            result = generate_daily_focus(AGGREGATED)
+            result = generate_daily_focus(AGGREGATED, session)
 
     assert result["headline"] is not None
     assert "opening" in result["explanation"]
 
 
-def test_generate_daily_focus_falls_back_to_friendly_text_when_no_pattern_found():
+def test_generate_daily_focus_falls_back_to_friendly_text_when_no_pattern_found(session):
     with patch("app.focus.settings") as mock_settings:
         mock_settings.fal_api_key = None
-        result = generate_daily_focus(EMPTY_AGGREGATED)
+        result = generate_daily_focus(EMPTY_AGGREGATED, session)
 
     assert result["headline"] == "No major recurring issues found"
     assert result["recommendation"] is not None
 
 
-def test_generate_daily_focus_uses_raw_text_as_explanation_on_parse_failure():
+def test_generate_daily_focus_uses_raw_text_as_explanation_on_parse_failure(session):
     with patch("app.focus.settings") as mock_settings:
         mock_settings.fal_api_key = "test-fal-key"
         with patch("app.focus.OpenAI") as mock_openai_cls:
@@ -127,14 +142,14 @@ def test_generate_daily_focus_uses_raw_text_as_explanation_on_parse_failure():
             )
             mock_openai_cls.return_value = mock_client
 
-            result = generate_daily_focus(AGGREGATED)
+            result = generate_daily_focus(AGGREGATED, session)
 
     assert result["headline"] is None
     assert result["recommendation"] is None
     assert result["explanation"] == "This is not JSON at all, just prose about your chess."
 
 
-def test_generate_daily_focus_uses_raw_text_when_json_is_malformed():
+def test_generate_daily_focus_uses_raw_text_when_json_is_malformed(session):
     with patch("app.focus.settings") as mock_settings:
         mock_settings.fal_api_key = "test-fal-key"
         with patch("app.focus.OpenAI") as mock_openai_cls:
@@ -144,10 +159,49 @@ def test_generate_daily_focus_uses_raw_text_when_json_is_malformed():
             )
             mock_openai_cls.return_value = mock_client
 
-            result = generate_daily_focus(AGGREGATED)
+            result = generate_daily_focus(AGGREGATED, session)
 
     assert result["headline"] is None
     assert result["explanation"].startswith('{"headline"')
+
+
+def test_generate_daily_focus_records_llm_usage_on_success(session):
+    with patch("app.focus.settings") as mock_settings:
+        mock_settings.fal_api_key = "test-fal-key"
+        with patch("app.focus.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            usage = MagicMock(prompt_tokens=60, completion_tokens=30, total_tokens=90)
+            mock_client.chat.completions.create.return_value = _mock_openai_response(
+                '{"headline": "H", "explanation": "E", "recommendation": "R"}',
+                usage=usage,
+            )
+            mock_openai_cls.return_value = mock_client
+
+            generate_daily_focus(AGGREGATED, session)
+
+    rows = session.exec(select(LlmUsage)).all()
+    assert len(rows) == 1
+    assert rows[0].call_site == "focus"
+    assert rows[0].prompt_tokens == 60
+    assert rows[0].completion_tokens == 30
+
+
+def test_generate_daily_focus_survives_record_llm_usage_raising(session):
+    with patch("app.focus.settings") as mock_settings:
+        mock_settings.fal_api_key = "test-fal-key"
+        with patch("app.focus.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            usage = MagicMock(prompt_tokens=60, completion_tokens=30, total_tokens=90)
+            mock_client.chat.completions.create.return_value = _mock_openai_response(
+                '{"headline": "H", "explanation": "E", "recommendation": "R"}',
+                usage=usage,
+            )
+            mock_openai_cls.return_value = mock_client
+
+            with patch("app.focus.record_llm_usage", side_effect=RuntimeError("boom")):
+                result = generate_daily_focus(AGGREGATED, session)
+
+    assert result == {"headline": "H", "explanation": "E", "recommendation": "R"}
 
 
 # --- extract_practice_positions -------------------------------------------

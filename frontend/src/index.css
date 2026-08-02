@@ -16,6 +16,13 @@
   --mistake: #c17a2e;
   --mistake-bg: #f1ead9;
 
+  /* Play-vs-engine board highlight overlays — semi-transparent variants of
+     existing tokens (--text-muted, --lost, --accent) so the underlying
+     square color still shows through. */
+  --last-move-overlay: rgba(140, 133, 112, 0.35);
+  --check-overlay: rgba(180, 72, 58, 0.45);
+  --legal-move-overlay: rgba(63, 93, 72, 0.45);
+
   --serif: 'Source Serif 4', serif;
   --sans: 'Work Sans', -apple-system, BlinkMacSystemFont, sans-serif;
 
