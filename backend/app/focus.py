@@ -13,11 +13,13 @@ import logging
 from typing import Any
 
 from openai import OpenAI
+from sqlmodel import Session
 
 from app.chess_engine import fen_before_move
 from app.coaching import FAL_BASE_URL, FAL_MODEL
 from app.config import settings
 from app.llm_json import parse_structured_llm_response
+from app.llm_usage import record_llm_usage
 from app.models import Game
 
 logger = logging.getLogger(__name__)
@@ -102,7 +104,9 @@ def _fallback_focus(aggregated_data: dict[str, Any]) -> dict[str, str | None]:
     }
 
 
-def generate_daily_focus(aggregated_data: dict[str, Any]) -> dict[str, str | None]:
+def generate_daily_focus(
+    aggregated_data: dict[str, Any], session: Session
+) -> dict[str, str | None]:
     """Generate a structured `{headline, explanation, recommendation}` daily
     focus from `aggregate_weakness_data`'s output.
 
@@ -134,6 +138,15 @@ def generate_daily_focus(aggregated_data: dict[str, Any]) -> dict[str, str | Non
             max_tokens=300,
         )
         content = response.choices[0].message.content or ""
+        try:
+            record_llm_usage(session, "focus", FAL_MODEL, response.usage)
+        except Exception:
+            # `record_llm_usage` is documented to never raise, but this
+            # call site is still guarded independently -- usage recording
+            # is a purely optional side effect and must never turn an
+            # already-successful API response into a failed one, even if
+            # that contract is ever violated (e.g. by a bug, or in tests).
+            logger.exception("record_llm_usage raised unexpectedly for call_site=focus.")
     except Exception:
         logger.exception("Failed to generate daily focus via fal.ai.")
         return _fallback_focus(aggregated_data)

@@ -10,6 +10,7 @@ import {
 } from "./api";
 import PlayPanel from "./PlayPanel";
 import PracticePanel from "./PracticePanel";
+import UsagePill from "./UsagePill";
 import "./App.css";
 
 function TokenGate({ onSubmit }: { onSubmit: (token: string) => void }) {
@@ -275,7 +276,10 @@ function App() {
 
   return (
     <div className="page">
-      <TopNav activeTab={activeTab} onTabChange={setActiveTab} />
+      <div className="top-bar">
+        <TopNav activeTab={activeTab} onTabChange={setActiveTab} />
+        <UsagePill />
+      </div>
       {activeTab === "sync" ? (
         <div className="app">
           <p className="eyebrow">Sync</p>

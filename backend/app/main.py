@@ -9,6 +9,7 @@ from app.routers.focus import router as focus_router
 from app.routers.games import router as games_router
 from app.routers.play import router as play_router
 from app.routers.practice import router as practice_router
+from app.routers.usage import router as usage_router
 
 
 @asynccontextmanager
@@ -32,6 +33,7 @@ app.include_router(games_router)
 app.include_router(play_router)
 app.include_router(focus_router)
 app.include_router(practice_router)
+app.include_router(usage_router)
 
 
 @app.get("/health")
